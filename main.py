@@ -27,7 +27,8 @@ from dd2 import logs, report, workspace
 from dd2.binio import FormatError
 from dd2.dirinfo import DirInfo
 from dd2.level import LevelFile
-from dd2.carmodel import DEFAULT_SCALE, build_car, build_livery
+from dd2.carmodel import (DEFAULT_SCALE, PLAYER_CAR, build_car, build_livery,
+                          player_liveries)
 from dd2.glb import write_glb
 from dd2.textures import LevelTextures, export_tiles
 
@@ -219,19 +220,32 @@ def extract_cars(gamedata_dir: Path, levels: dict[str, LevelFile],
     written = 0
     problems = 0
 
+    # One livery per car, except the player's car which has three class
+    # variants (rookie / amateur / pro).
+    liveries = []
     for car in level.tex_names.car_numbers():
         try:
-            livery = build_livery(level.tex_names, car)
+            if car == PLAYER_CAR:
+                liveries.extend(player_liveries(level.tex_names))
+            else:
+                liveries.append(build_livery(level.tex_names, car))
+        except FormatError as exc:
+            log.error("car %s: cannot build livery: %s", car, exc)
+            problems += 1
+
+    for livery in liveries:
+        try:
             objects = build_car(level, textures, livery, scale=scale,
                                 body_section=section)
-            write_glb(objects, dest / f"car_{car}.glb")
+            write_glb(objects, dest / f"car_{livery.label}.glb")
         except (FormatError, KeyError) as exc:
-            log.error("car %s: export failed: %s", car, exc)
+            log.error("car %s: export failed: %s", livery.label, exc)
             problems += 1
             continue
 
         log.info("car %s: %d nodes, %d vertices, %d triangles",
-                 car, len(objects), sum(o.vertex_count for o in objects),
+                 livery.label, len(objects),
+                 sum(o.vertex_count for o in objects),
                  sum(o.triangle_count for o in objects))
         written += 1
 

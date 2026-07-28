@@ -79,13 +79,28 @@ turning every wheel into a black disc. `_deduplicate` drops the darker of any
 two polygons sharing a vertex set and UV index.
 
 Wheel placement is not stored anywhere we can read — the game computes it from
-live suspension state (`DAT_80091028 + car*0x288 + wheel*0x84`). The positions
-below are therefore *derived from the wheel arch openings*: grouping body
-polygons by sampled tile gives FRWN88A spanning x 134..184, z 174..439 and
-BKWN88A spanning x 141..186, z -442..-118, symmetric about X. Centre those and
-you get the mounting points. Height is the one free parameter, chosen so the
-tyre sits in the arch without clipping the sill; it is a constant here and easy
-to adjust, and each wheel is a separate named node so it can be moved.
+live suspension state (`DAT_80091028 + car*0x288 + wheel*0x84`). So it has to
+be derived, and the arches are the evidence.
+
+The arches are **painted on flat side panels**, not cut into the geometry, so
+the panel's bounding box says nothing useful about where the wheel goes — an
+earlier attempt used it and put the wheels visibly off. The arch outline lives
+in the FRWN88A and BKWN88A *textures* as a near-black region, so the way to
+find it is to locate that region in texture space and map it back to model
+space through the polygons' UVs.
+
+Fitting an affine UV->XYZ map by least squares over every arch-panel corner
+(the panels are planar, so the fit is well conditioned: mean error 1-11 units)
+and evaluating it at the centre of the dark region gives:
+
+    front arch   x = +-172   y = -36   z = +291    painted radius ~79 units
+    rear arch    x = +-179   y = -95   z = -231    painted radius ~82 units
+
+The painted radius exceeding the wheel's 67 is expected — the arch is drawn
+larger than the tyre. The rear figure for y is not usable: the dark region runs
+into the bottom edge of its tile, so the widest row is clipped and reports the
+tile edge rather than the axle line. A car's axles are level, so the front's
+y = -36 is used for both.
 """
 
 from __future__ import annotations
@@ -150,15 +165,66 @@ DEFAULT_SCALE = 1.0 / 256.0
 BODY_SECTION = 17
 WHEEL_SECTION = 18
 
-# Wheel mounting points in model space, derived from the arch openings; see the
-# module docstring. Height is the free parameter.
-WHEEL_CENTRE_Y = -34
+# Wheel mounting points, recovered from the painted arches; see the module
+# docstring for the method. Wheel radius is 67 units, half-width 33.
+WHEEL_CENTRE_Y = -36
+WHEEL_ARCH_Z = {"front": 291, "rear": -231}
+# Body surface X at each arch, from the same affine fit.
+WHEEL_ARCH_PANEL_X = {"front": 172, "rear": 179}
+# How far inboard of the body surface the wheel's outer face sits. At 0 the
+# wheels protrude past the flanks; at 33 (the full half-width) they vanish
+# inside the body. 16 puts them flush with the flank and just visible from
+# behind, which matches the game.
+WHEEL_INSET = 16
+
 WHEEL_POSITIONS = {
-    "wheel_front_left": (-159, WHEEL_CENTRE_Y, 306),
-    "wheel_front_right": (159, WHEEL_CENTRE_Y, 306),
-    "wheel_rear_left": (-163, WHEEL_CENTRE_Y, -280),
-    "wheel_rear_right": (163, WHEEL_CENTRE_Y, -280),
+    f"wheel_{end}_{side}": (
+        sign * (WHEEL_ARCH_PANEL_X[end] - WHEEL_INSET),
+        WHEEL_CENTRE_Y,
+        WHEEL_ARCH_Z[end],
+    )
+    for end in ("front", "rear")
+    for side, sign in (("left", -1), ("right", 1))
 }
+
+
+# The player's car carries extra palette sets under the CLT prefix instead of
+# CLUT. Car 01 has three: the plain CLUT01x set plus CLT01x2 and CLT01x3, which
+# are the three difficulty classes.
+#
+# Confirmation that these are variants of car 01 rather than separate cars:
+# CLUT01B/C/D/E are byte-identical to CLT01B2/C2/D2/E2, so variant 2 changes
+# only the 8bpp body colour and inherits every panel and glass palette from the
+# base. Variant 3 differs across all five letters.
+PLAYER_CAR = "01"
+PLAYER_VARIANTS: dict[str, str | None] = {
+    "rookie": None,     # the plain CLUT01x set
+    "amateur": "2",     # CLT01x2
+    "pro": "3",         # CLT01x3
+}
+
+# The player's door number panel needs its own palette per variant, because the
+# panel background is painted in the car's colours. The CLT01x sets cover the
+# bodywork but not the door: DR01A is a separate 8bpp tile with a single CLUT of
+# its own, and decoding it with a CLUTnnA body palette produces garbage.
+#
+# The palettes are named P1D1T2 and P1D1T3 — "player 1, door 1, type 2/3". Both
+# are palette-only records (their tile position is the (320,0) staging slot, so
+# only clut_x/clut_y mean anything) and both are present in all 11 track files.
+# Decoding DR01A against them reproduces each variant's colours exactly:
+#
+#     DR01A's own CLUT  ->  yellow 01 on white/red    = rookie
+#     P1D1T2            ->  blue 01 on white/purple   = amateur
+#     P1D1T3            ->  blue 01 on yellow/black   = pro
+#
+# There is no P2D1Tx, which is further evidence that the CLT02x set is something
+# other than a fourth variant of the player's car.
+PLAYER_DOOR_CLUT = {"2": "P1D1T2", "3": "P1D1T3"}
+
+# A second CLT set, CLT02x2 / CLT02x3, exists in LEV1, LEV4, LEV5, LEVA and
+# LEVB but has no CLUT02x base and no DR02A door tile in those levels — most
+# likely the second car in two-player mode. Not exported; see PLAN.md.
+SECOND_PLAYER_CAR = "02"
 
 
 @dataclass(frozen=True)
@@ -171,35 +237,62 @@ class Livery:
     # Replacement door tile, and its offset from DR88A in VRAM pixels.
     door_tile: TexName | None = None
     door_offset: tuple[int, int] = (0, 0)
+    # Palette for the door panel. None means use door_tile's own CLUT; the
+    # player's variants override it with P1D1T2 / P1D1T3.
+    door_clut: TexName | None = None
+    # Name for the output file, e.g. "01_pro". Defaults to the car number.
+    variant_label: str | None = None
 
     @property
     def is_base(self) -> bool:
         return self.car_number == BASE_CAR
 
+    @property
+    def label(self) -> str:
+        return self.variant_label or self.car_number
+
+
+def player_liveries(names: TextureNameTable) -> list[Livery]:
+    """The player car's three class variants, in rookie/amateur/pro order."""
+    return [
+        build_livery(names, PLAYER_CAR, variant=suffix,
+                     label=f"{PLAYER_CAR}_{class_name}")
+        for class_name, suffix in PLAYER_VARIANTS.items()
+    ]
+
 
 def build_livery(names: TextureNameTable, car_number: str,
+                 variant: str | None = None, label: str | None = None,
                  base_door: str = f"DR{BASE_CAR}A") -> Livery:
     """
     Gather the palette substitutions for one car.
 
-    Raises FormatError if a car is missing palettes we expect, rather than
-    quietly emitting a car that looks like #88.
+    `variant` selects one of the player car's alternate sets: None uses the
+    standard `CLUTnnX` palettes, "2" and "3" use `CLTnnX2` and `CLTnnX3`.
+
+    Raises FormatError if a palette we expect is missing, rather than quietly
+    emitting a car that looks like #88.
     """
-    if car_number == BASE_CAR:
-        return Livery(car_number=car_number)
+    if car_number == BASE_CAR and variant is None:
+        return Livery(car_number=car_number, variant_label=label)
+
+    prefix = "CLUT" if variant is None else "CLT"
+    suffix = variant or ""
 
     part_clut: dict[str, TexName] = {}
     missing: list[str] = []
     for part, letter in PART_CLUT_LETTER.items():
-        rec = names.get(f"CLUT{car_number}{letter}")
+        key = f"{prefix}{car_number}{letter}{suffix}"
+        rec = names.get(key)
         if rec is None:
-            missing.append(f"CLUT{car_number}{letter}")
+            missing.append(key)
             continue
         part_clut[part] = rec
     if missing:
         raise FormatError(
-            f"car {car_number}: missing palette record(s) "
-            f"{', '.join(sorted(set(missing)))}")
+            f"car {car_number}"
+            f"{f' variant {variant}' if variant else ''}: "
+            f"missing palette record(s) {', '.join(sorted(set(missing)))}")
 
     door = names.get(f"DR{car_number}A")
     base = names.get(base_door)
@@ -218,8 +311,28 @@ def build_livery(names: TextureNameTable, car_number: str,
     per_hw = pixels_per_halfword(door.bpp)
     offset = ((door.vram_x - base.vram_x) * per_hw,
               door.vram_y - base.vram_y)
+
+    # The player's alternate classes repaint the door panel too.
+    door_clut = None
+    if variant is not None:
+        clut_name = PLAYER_DOOR_CLUT.get(variant)
+        if clut_name is None:
+            raise FormatError(
+                f"car {car_number} variant {variant}: no door palette is "
+                f"known for this variant")
+        door_clut = names.get(clut_name)
+        if door_clut is None:
+            raise FormatError(
+                f"car {car_number} variant {variant}: door palette "
+                f"{clut_name} is missing from this level")
+        if door_clut.bpp != door.bpp:
+            raise FormatError(
+                f"{clut_name} is {door_clut.bpp}bpp but {door.name} is "
+                f"{door.bpp}bpp; palettes are not interchangeable")
+
     return Livery(car_number=car_number, part_clut=part_clut,
-                  door_tile=door, door_offset=offset)
+                  door_tile=door, door_offset=offset, door_clut=door_clut,
+                  variant_label=label)
 
 
 # ---------------------------------------------------------------------------
@@ -273,10 +386,14 @@ def resolve_source(textures: LevelTextures, poly: Polygon, uv: UVRecord,
     part = rec.part
 
     # Door number panel: a different tile, not merely a different palette.
+    # The palette source may differ from the tile — the player's variants keep
+    # DR01A's pixels but recolour them via P1D1T2 / P1D1T3.
     if part == "DR" and livery.door_tile is not None:
         door = livery.door_tile
-        return TextureSource(uv.tpage.bpp, door.clut_x, door.clut_y,
-                             livery.door_offset, door.name)
+        palette = livery.door_clut or door
+        label = door.name if palette is door else f"{door.name}+{palette.name}"
+        return TextureSource(uv.tpage.bpp, palette.clut_x, palette.clut_y,
+                             livery.door_offset, label)
 
     replacement = livery.part_clut.get(part) if part else None
     if replacement is None:

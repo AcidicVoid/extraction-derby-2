@@ -167,10 +167,28 @@ wheel slots (`ptr[5], ptr[6], ptr[5], ptr[6]`), but they have no hubcap texture,
 section 18 is what we export.
 
 **O. Wheel placement is not stored** — the game derives it from live suspension state
-(`DAT_80091028 + car*0x288 + wheel*0x84`). Positions are therefore derived from the
-arch openings (FRWN88A x 134..184 z 174..439; BKWN88A x 141..186 z −442..−118),
-giving front (±159, 306) and rear (±163, −280). Height is the one free parameter.
-Each wheel is a separate named node so it stays adjustable.
+(`DAT_80091028 + car*0x288 + wheel*0x84`), so it has to be reconstructed.
+
+The arches are **painted on flat side panels, not cut into the geometry**, so the
+panel's bounding box says nothing about where the wheel belongs. A first attempt used
+it and the wheels came out visibly off. The arch outline lives in the FRWN88A/BKWN88A
+*textures* as a near-black region, so the fix is to locate that region in texture space
+and map it back through the polygons' UVs. Fitting an affine UV→XYZ map by least
+squares over every arch-panel corner (planar panels, mean error 1–11 units) and
+evaluating at the dark region's centre gives:
+
+| arch | x | y | z | painted radius |
+|---|---|---|---|---|
+| front | ±172 | −36 | +291 | ~79 |
+| rear | ±179 | −95 *(clipped)* | −231 | ~82 |
+
+Painted radius exceeding the wheel's 67 is expected — the arch is drawn larger than the
+tyre. The rear `y` is unusable: its dark region runs into the tile's bottom edge, so the
+widest row reports the tile edge rather than the axle. Axles are level on a car, so the
+front's −36 is used for both. `WHEEL_INSET = 16` sets how far inboard of the body
+surface the wheel's outer face sits — 0 protrudes past the flanks, 33 (full half-width)
+hides the wheels entirely, 16 sits flush and just visible from behind. Each wheel
+remains a separate named node.
 
 **P. Section 18 ships coincident duplicate faces.** Polygons 0/1 duplicate 10/11 with
 identical vertices and UVs but colour (0,0,0) instead of neutral (128,128,128). The
@@ -205,6 +223,39 @@ This corrects the prior session's notes, which had boot on C and both windows on
   The hubcap is a square quad whose corners are palette entry `0x0000`; opaque, it
   rendered as a black square instead of a disc. Now `MASK` with cutoff 0.5 wherever
   a texture contains fully transparent texels — which is only the wheel.
+
+**S. The player's car has three class variants, and they need *two* palette sets.**
+Car 01 carries `CLUT01A–E` plus `CLT01A2–E2` and `CLT01A3–E3`, exported as
+`car_01_rookie`, `car_01_amateur`, `car_01_pro`. Evidence that these are variants of
+car 01 rather than separate cars: `CLUT01B/C/D/E` are **byte-identical** to
+`CLT01B2/C2/D2/E2`, so variant 2 changes only the 8bpp body colour and inherits every
+panel and glass palette from the base. Variant 3 differs across all five letters.
+
+The `CLT01x` sets cover the bodywork but **not the door number panel**. `DR01A` is a
+separate 8bpp tile with a single CLUT of its own, and decoding it against a `CLUTnnA`
+body palette produces garbage — so at first all three variants shared the rookie's
+yellow-on-white/red panel, which clashed badly with the pro's yellow/black body.
+
+The missing palettes are `P1D1T2` and `P1D1T3` — "player 1, door 1, type 2/3" — two
+8bpp palette-only records (tile position is the `(320,0)` staging slot, so only
+`clut_x`/`clut_y` mean anything) present in all 11 track files. I had passed over them
+earlier as unremarkable staging-slot entries. Decoding `DR01A` against them reproduces
+each variant's colours exactly:
+
+| variant | door palette | result |
+|---|---|---|
+| rookie | `DR01A`'s own | yellow 01 on white/red |
+| amateur | `P1D1T2` | blue 01 on white/purple |
+| pro | `P1D1T3` | blue 01 on yellow/black |
+
+Each matches its body colours, which is the confirmation. There is no `P2D1Tx`, further
+evidence that `CLT02x` is not a fourth variant of the player's car.
+
+**T. A second CLT set exists and is not exported.** `CLT02A2–E2` / `CLT02A3–E3` appear
+in LEV1, LEV4, LEV5, LEVA and LEVB (5 of 11 tracks) but have **no** `CLUT02x` base and
+no `DR02A` door tile in those levels — `DR02A/B/C` exist only in LEV2. Most likely the
+second car in two-player mode. Exporting it would need a decision about which door
+panel it uses, so it is left out pending confirmation.
 
 **M. Palette sourcing has three tiers, and one guess had to be thrown out.**
 - The name-table record is the more authoritative CLUT source: in LEV0, 42 tiles carry
@@ -350,8 +401,9 @@ and scale visually.
 **M3 — Cars (primary deliverable #1)** — ✅ **done**
 `dd2/glb.py` (glTF writer, textures embedded), `dd2/carmodel.py` (livery logic),
 `tools/render_glb.py` (software renderer for verification).
-Deliverable: **20 textured GLBs in `output/cars/`**, each 5 nodes
-(body + 4 wheels), ~465 vertices / 294 triangles. See §1.3 N–R.
+Deliverable: **22 textured GLBs in `output/cars/`** — 19 opponents plus the
+player car's three class variants — each 5 nodes (body + 4 wheels),
+465 vertices / 294 triangles. See §1.3 N–T.
 
 **M4 — Terrain format**
 Crack U1 via Ghidra + ptr[2] correlation. Deliverable: a documented chunk spec in
