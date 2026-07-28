@@ -1,42 +1,26 @@
 """
-texnames.py — the texture name table (LEVEL.DAT section 3).
+The texture name table, LEVEL.DAT section 3.
 
-This table is the master index for every named graphical asset in a level. It
-ties a name to a rectangle of PSX VRAM and to the CLUT (palette) that
-rectangle is drawn with.
+Ties a name to a rectangle of PSX VRAM and to the CLUT that rectangle is drawn
+with. Section layout is u32 count followed by count 24-byte records:
 
-Record layout (24 bytes), verified on all 14 level files
---------------------------------------------------------
     +0x00  u16  vram_x    X position in VRAM, in 16-bit halfwords
     +0x02  u16  vram_y    Y position in VRAM, in scanlines
-    +0x04  u16  width     tile width in PIXELS  (not halfwords)
+    +0x04  u16  width     tile width in pixels, not halfwords
     +0x06  u16  height    tile height in scanlines
     +0x08  u16  clut_x    CLUT X position in VRAM, in halfwords
     +0x0a  u16  clut_y    CLUT Y position in VRAM, in scanlines
-    +0x0c  u16  bpp       literal bit depth: only ever 4 or 8
+    +0x0c  u16  bpp       literal bit depth, only ever 4 or 8
     +0x0e  char[10]       name, NUL-padded
 
-Section layout: u32 count, then count * 24 bytes. The computed size matches
-the section span exactly for every level file, which is what lets us trust
-the record size.
+Two sentinel forms mark records that are not resident in VRAM, for which only
+clut_x and clut_y carry meaning:
 
-Why we know the units are right
--------------------------------
-Converting width from pixels to halfwords (16/bpp pixels per halfword) and
-rasterising every record into a 1024x512 VRAM grid produces **zero
-overlapping halfwords across all 14 levels**, and no record leaves the VRAM
-bounds. Any other interpretation of the unit fields produces mass collisions.
+    (vram_x, vram_y) == (320, 0)   staging slot, or a palette-only record
+    vram_y == 0xFFFF               palette-only record
 
-Two sentinel forms mark records that are not resident in VRAM
--------------------------------------------------------------
-    (vram_x, vram_y) == (320, 0)   staging slot: paged in on demand, or a
-                                   palette-only record such as CLUT00A
-    vram_y == 0xFFFF               palette-only record (seen on SMCL* in
-                                   LEV1 and LEV3)
-
-For those records only clut_x/clut_y carry meaning. They are the mechanism
-behind the per-car livery system: one set of body tiles in VRAM, many CLUT
-records recolouring it.
+A third sentinel, clut_y == 0xFFFE, marks a record with real pixels but no
+palette of its own.
 """
 
 from __future__ import annotations
@@ -69,7 +53,7 @@ NO_VRAM_Y = 0xFFFF
 # Surveyed across all 14 level files, the prefixes fall into three groups:
 #
 #   BODY_TILE_PREFIXES   real pixel data. Every one of these exists for car
-#                        88 ONLY — that is the shared body tile set the whole
+#                        88 ONLY - that is the shared body tile set the whole
 #                        grid is drawn from.
 #                          BUMP    front/rear bumper   BKWN    back wing
 #                          FRNT    front panel         FRWN    front wing
@@ -85,7 +69,7 @@ NO_VRAM_Y = 0xFFFF
 #                          CLT   player alternate liveries only: slots 01, 02
 #                                with variants A2/A3, B2/B3 ...
 #
-#   NUMBER_PANEL_PREFIX  DR — the door number panels, 3 damage states each
+#   NUMBER_PANEL_PREFIX  DR - the door number panels, 3 damage states each
 #                        (A undamaged, B, C). 21 numbers: the 20 cars plus a
 #                        DR02 belonging to the player alternate livery.
 #
@@ -115,7 +99,7 @@ CANONICAL_CAR_NUMBERS = (
 BASE_CAR_NUMBER = "88"
 
 # The variant suffix is OPTIONAL. Most car assets are <PART><nn><VARIANT>
-# (BUMP88A, DR40B), but the three window tiles are just <PART><nn> —
+# (BUMP88A, DR40B), but the three window tiles are just <PART><nn> -
 # WINSID88, WINFRN88, WINBCK88 have no damage states. Requiring a suffix made
 # those three fail to match, so they were treated as non-car assets and kept
 # car 88's light blue palette on every livery: every car came out with cyan
@@ -154,11 +138,6 @@ class TexName:
                 and (self.vram_x, self.vram_y) != STAGING_SLOT)
 
     @property
-    def clut_entries(self) -> int:
-        """Number of colours in this record's palette."""
-        return 16 if self.bpp == 4 else 256
-
-    @property
     def has_clut(self) -> bool:
         """
         False when clut_y is the 0xFFFE sentinel: the record has real pixels
@@ -167,11 +146,6 @@ class TexName:
         descriptors; see vram.NO_CLUT.
         """
         return self.clut_y != NO_CLUT
-
-    @property
-    def is_decodable(self) -> bool:
-        """Resident pixels and a palette of its own — safe to turn into an image."""
-        return self.is_resident and self.has_clut
 
     @property
     def _car_match(self) -> re.Match | None:
@@ -216,11 +190,6 @@ class TexName:
     def is_body_tile(self) -> bool:
         """A shared car body tile (pixel data, car 88 only)."""
         return self.part in BODY_TILE_PREFIXES
-
-    @property
-    def is_palette_record(self) -> bool:
-        """A CLUT-only record that recolours the shared body tiles."""
-        return self.part in PALETTE_PREFIXES
 
     @property
     def is_number_panel(self) -> bool:
@@ -298,9 +267,6 @@ class TextureNameTable:
         return sorted({r.car_number for r in self.records
                        if r.car_number is not None})
 
-    def for_car(self, car_number: str) -> list[TexName]:
-        return [r for r in self.records if r.car_number == car_number]
-
     def body_tiles(self) -> list[TexName]:
         """The shared car body tiles (car 88's pixel data)."""
         return [r for r in self.records if r.is_body_tile]
@@ -327,11 +293,8 @@ class TextureNameTable:
         palette. The candidate must be a recognised car asset, must share
         `rec`'s part and car number, and must have the same bit depth.
 
-        Deliberately narrow. An earlier, looser version matched on any name
-        sharing a prefix, and promptly paired LEV0's `CARD` menu sprite with an
-        unrelated `CAR*` entry — a plausible-looking result that was simply
-        wrong. Only the damage-variant pattern has actually been verified
-        against the data, so only that is applied.
+        Deliberately narrow. Matching on any shared name prefix instead pairs
+        unrelated sprites, so only the damage-variant pattern is applied.
 
         Returns None where the palette is genuinely unknown: LEV0's menu
         sprites (`CONFIG`/`CONFIGP`, the `I*` icons) and LEV6's `FLASH1-6`
@@ -410,7 +373,7 @@ class TextureNameTable:
         Which named tile, if any, occupies VRAM halfword (x, y).
 
         Returns None for most of VRAM: the name table only indexes *named*
-        assets — car body parts, UI elements, specific props. In LEV1 that is
+        assets - car body parts, UI elements, specific props. In LEV1 that is
         194 tiles covering 134,776 of VRAM's 524,288 halfwords. The remainder
         is filled by TX0-TX3 uploads that carry no name and are addressed
         purely through the UV table. Track surface textures live there, so

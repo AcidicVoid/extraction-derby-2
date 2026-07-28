@@ -1,42 +1,25 @@
 """
-lzss.py — the LZSS codec used for circuit terrain chunks.
+LZSS codec for compressed terrain chunks.
 
-Ported from `FUN_80050ba0`. This is the one place in the game where LEVEL.DAT
-data really is compressed: **individual terrain chunks of the circuit tracks**
-(LEV1-LEV7). Everything else, including the whole outer LEVEL.DAT container and
-the arena tracks' terrain (LEV8-LEVB), is stored plainly.
+Only the terrain chunks of the circuit tracks (LEV1-LEV7) are compressed.
+Everything else, including the LEVEL.DAT container itself and the arena tracks'
+terrain, is stored plainly.
 
-That distinction is why the earlier project's decompression attempt failed: it
-applied a codec to the entire file, where it does not belong, and its window
-arithmetic was wrong as well.
+Stream format:
 
-Stream format
--------------
     u32                total decompressed size
-    then, repeatedly:
-    u8   control       eight flag bits, least-significant first
+    then repeatedly:
+    u8   control       eight flag bits, least significant first
     per bit:
       bit set          one literal byte follows
       bit clear        two bytes follow, a back-reference:
-                           b1, b2
                            offset = (b1 | ((b2 & 0xF0) << 4)) - 0x1000
                            length = (b2 & 0x0F) + 3
-                       copy `length` bytes from `output[len(output) + offset]`,
-                       one at a time so overlapping copies work
 
-`offset` is always negative: the raw 12-bit value is biased by -0x1000, making
-it a displacement back from the current write position. It is **not** an index
-into a ring buffer — the previous implementation modelled it that way and
-produced garbage.
-
-The original decodes exactly eight symbols per control byte, which it arranges
-by OR-ing the control byte with 0xFF00 and looping until that sentinel bit
-shifts out.
-
-Verification: all 231 terrain chunks across LEV1-LEV7 decompress to exactly
-their declared size, no back-reference ever reaches before the start of the
-output, and every result begins with a record count of 32 or fewer — matching
-the arenas' uncompressed chunks, which are laid out identically.
+The offset is always negative: the raw 12-bit value is biased by -0x1000,
+making it a displacement back from the current write position rather than an
+index into a ring buffer. Matches are copied one byte at a time so overlapping
+copies work.
 """
 
 from __future__ import annotations

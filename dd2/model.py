@@ -1,21 +1,16 @@
 """
-model.py — model blocks and the polygon command stream.
+Model blocks and the polygon command stream.
 
-A model block is a self-contained mesh: header, vertex array, normal array,
-and a stream of polygon batches. Sections 5 and up of every LEVEL.DAT hold
-one block each — props, cars, wheels and their LOD variants.
+A model block is a self-contained mesh: header, vertex array, normal array and
+a stream of polygon batches. Sections 5 and up of every LEVEL.DAT hold one
+block each. Fields whose meaning is not established are named by their offset
+and carried through unchanged.
 
-Everything below was derived from the data and then checked against all 197
-model blocks in the retail files. Where a field's meaning is not established,
-it is named by its offset and carried through unchanged rather than guessed
-at; see UNKNOWN FIELDS at the end of this docstring.
+Block header (0x2C bytes):
 
-
-Block header (0x2C bytes)
--------------------------
     +0x00  u32  unknown_00
     +0x04  u16  unknown_04     always 0
-    +0x06  u16  unknown_06     equals unknown_00 in 170 of 197 blocks
+    +0x06  u16  unknown_06
     +0x08  u16  unknown_08
     +0x0A  u16  vertex_count
     +0x0C  u16  normal_count
@@ -26,91 +21,52 @@ Block header (0x2C bytes)
     +0x18  u16  unknown_18
     +0x1A  u16  unknown_1a
     +0x1C  u16  unknown_1c
-    +0x1E  u16  unknown_1e     always 0 on disc; the game sets it after it
+    +0x1E  u16  unknown_1e     always 0 on disc; set by the game once it
                                relocates the three offsets below to pointers
     +0x20  u32  vertex_offset  always 0x2C
     +0x24  u32  normal_offset  always vertex_offset + 8 * vertex_count
     +0x28  u32  polygon_offset always normal_offset + 8 * normal_count
 
-The three offsets are redundant with the counts, which is exactly what makes
-them useful: they cross-check our reading of the counts. All 197 blocks agree.
+The three offsets are redundant with the counts, which makes them useful as a
+cross-check on the counts.
 
-Vertices and normals are both 8 bytes: i16 x, i16 y, i16 z, i16 pad.
+Vertices and normals are both 8 bytes: i16 x, i16 y, i16 z, i16 pad. Normals
+are 1.12 fixed point, so 4096 is unit length.
 
-
-Polygon command stream
-----------------------
-A sequence of batches. Each batch is a 4-byte header followed by `count`
-fixed-size entries. A batch header with entry_size == 0 terminates the stream.
+The polygon stream is a sequence of batches, each a 4-byte header followed by
+`count` fixed-size entries. A header with entry_size == 0 terminates it.
 
     u16 count
     u8  type
     u8  entry_size
 
-Summing `count` over all batches reproduces the header's polygon_count for
-every block, and the stream always ends exactly at the end of the block.
-
-
-Polygon entry layout
---------------------
-The type byte splits cleanly into two parts:
+Entry layout is derived from the type byte:
 
     base  = type & 0x1C      the primitive kind
     flags = type & 0x03      how shading data is supplied
-
-`base` maps one-to-one onto the PSX GPU primitive codes, and the entry stores
-that code at +0x07 — a partially pre-built GP0 packet. Verified on every
-entry:
-
-    base  primitive                       GPU code
-    0x00  flat triangle                     0x20
-    0x04  flat quad                         0x28
-    0x08  textured triangle                 0x24
-    0x0C  textured quad                     0x2C
-    0x10  gouraud triangle                  0x30
-    0x14  gouraud quad                      0x38
-    0x18  gouraud textured triangle         0x34
-    0x1C  gouraud textured quad             0x3C
 
     base & 0x04  ->  quad (4 corners) rather than triangle (3)
     base & 0x08  ->  textured
     base & 0x10  ->  gouraud shaded
 
-`flags` bit 0 means the entry carries a face normal index at +0x02; when
-clear that slot holds 0xFFFF. For gouraud primitives bit 0 additionally
-selects how per-corner shading arrives: set means per-vertex NORMAL indices
-(shading computed at runtime), clear means literal per-corner COLOURS baked
-into the entry. Bit 1's meaning is not yet established.
-
-That yields one layout rule covering all 24 observed type values:
+Flag bit 0 means the entry carries a face normal index at +0x02; when clear
+that slot holds 0xFFFF. On gouraud primitives it also selects per-vertex normal
+indices over literal per-corner colours.
 
     +0x00  u8   base type
-    +0x01  u8   attribute byte (semantics unknown, preserved verbatim)
+    +0x01  u8   attribute byte, meaning unknown, preserved verbatim
     +0x02  u16  face normal index, or 0xFFFF
-    +0x04  u32  GPU packet word: 0xCCBBGGRR (colour + primitive code)
+    +0x04  u32  GPU packet word: 0xCCBBGGRR, colour plus primitive code
            u32  x (n - 1) more colour words, if gouraud with literal colours
-    ...    u16  uv_index    | only if textured
-           u16  clut_id     |
+    ...    u16  uv_index and u16 clut_id, only if textured
     ...    u16 x n          vertex indices
-    ...    u16 x n          per-vertex normal indices, if gouraud with normals
+    ...    u16 x n          per-vertex normal indices, where applicable
     ...    padding to a multiple of 4
 
-The predicted entry size from this rule matches the batch header's
-entry_size for all 24 type values, and every index it locates is in range:
-6532 of 6532 polygons pass. 210 entries carry junk in the 2-byte tail pad
-(ASCII fragments left over from the build tool), so padding is not asserted
-to be zero.
+clut_id is the PSX CLUT descriptor: clut_x = (id & 0x3F) * 16, clut_y = id >> 6.
 
-`clut_id` is the PSX CLUT descriptor: clut_x = (id & 0x3F) * 16,
-clut_y = id >> 6.
-
-
-UNKNOWN FIELDS
---------------
-Not yet established, carried through unchanged so nothing is silently lost:
-  - header unknown_00 / _06 / _08 / _18 / _1a / _1c
-  - polygon entry attribute byte at +0x01
-  - meaning of type flag bit 1 (0x02)
+Terrain batches set bit 0x20 in the type byte, in which case the low five bits
+do not describe the primitive at all; see TYPE_TERRAIN_QUAD.
 """
 
 from __future__ import annotations
@@ -128,7 +84,7 @@ NO_FACE_NORMAL = 0xFFFF
 
 # PSX GP0 polygon command encoding. The command byte the entry carries at
 # +0x07 is 0x20 plus these flags, and it is the authoritative description of the
-# primitive — more reliable than the batch type byte, as the terrain types below
+# primitive - more reliable than the batch type byte, as the terrain types below
 # demonstrate.
 GPU_POLYGON = 0x20
 GPU_RAW_TEXTURE = 0x01      # do not modulate the texture by the colour
@@ -141,10 +97,9 @@ GPU_LAYOUT_IRRELEVANT = GPU_RAW_TEXTURE | GPU_SEMI_TRANSPARENT
 
 # Terrain batches set bit 0x20 in the type byte. When it is set the low five
 # bits do NOT describe the primitive: every such entry is a 20-byte textured
-# quad with no face normal, whatever the low bits say. Verified across all
-# terrain in all 11 tracks — types 0x22, 0x25, 0x27 and 0x29 all carry GPU code
-# 0x2C or 0x2E (textured quad, the 0x02 being semi-transparency) and all hold
-# 0xFFFF in the face-normal slot, even where the low bits would imply otherwise.
+# quad with no face normal, whatever the low bits say. The observed terrain
+# types 0x22, 0x25, 0x27 and 0x29 all carry GPU code 0x2C or 0x2E, a textured
+# quad with the 0x02 being semi-transparency.
 TYPE_TERRAIN_QUAD = 0x20
 
 
@@ -184,8 +139,8 @@ class PolyLayout:
     # Not derivable from `flags` alone: terrain types put other data there.
     has_face_normal: bool = False
     # Whether +0x02 is required to be 0xFFFF when it is not a face normal.
-    # True for ordinary types, where 6532 car and prop polygons agree. False
-    # for terrain quads, which store something else in that slot entirely.
+    # True for ordinary types; false for terrain quads, which store something
+    # else in that slot entirely.
     sentinel_enforced: bool = True
     # The GPU command byte this entry must carry, ignoring blend-only bits.
     gpu_code: int = 0
@@ -204,7 +159,7 @@ def layout_for(type_id: int) -> PolyLayout:
     Derive the entry layout for a polygon type byte.
 
     This is the single rule the whole decoder rests on; see the module
-    docstring for how it was established and verified.
+    docstring for the field ordering.
     """
     cached = _LAYOUT_CACHE.get(type_id)
     if cached is not None:
@@ -307,7 +262,7 @@ class Polygon:
         """
         Triangulate into vertex-index triples.
 
-        PSX quads are two triangles over corners (0,1,2) and (1,3,2) — the
+        PSX quads are two triangles over corners (0,1,2) and (1,3,2) - the
         corner order is a zig-zag strip, not a fan, so this winding is what
         keeps quads planar and consistently oriented.
         """
@@ -325,10 +280,6 @@ class Vec3:
     y: int
     z: int
     pad: int
-
-    def as_tuple(self) -> tuple[int, int, int]:
-        return (self.x, self.y, self.z)
-
 
 @dataclass
 class ModelBlock:
@@ -377,9 +328,6 @@ class ModelBlock:
         ys = [v.y for v in self.vertices]
         zs = [v.z for v in self.vertices]
         return ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
-
-    def uv_indices(self) -> set[int]:
-        return {p.uv_index for p in self.polygons if p.uv_index is not None}
 
     def clut_ids(self) -> set[int]:
         return {p.clut_id for p in self.polygons if p.clut_id is not None}
@@ -526,7 +474,7 @@ def parse_model_block(data: bytes, offset: int, size: int,
     a silent partial parse would be far more expensive than a crash here.
 
     `size` is normally the block's exact length, and the polygon stream is
-    required to end precisely there — a strong check that everything before it
+    required to end precisely there - a strong check that everything before it
     was read correctly. Set `allow_trailing` when the caller only knows an
     upper bound, as with the last model in a terrain chunk, which is followed
     by a few bytes of padding. The unread remainder is recorded in

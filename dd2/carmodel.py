@@ -1,106 +1,26 @@
 """
-carmodel.py — assemble a textured car mesh, in any of the 20 liveries.
+Assemble a textured car mesh in any of the 20 liveries.
 
-Where the car lives
--------------------
-The in-race car is a model block in the *track* files, not LEV0. In LEV1 two
-blocks reference the shared car body tiles and nothing else does: section 17
-(107 vertices, 147 polygons) and section 16 (102 / 108). They share **zero
-vertices**, so they are independently authored meshes rather than one
-decimated from the other.
+The in-race car lives in the track files, not LEV0. LEV1 section 17 is the car
+body and section 18 is a wheel, attached four times. Sections 5 and 6 are
+simplified single-sided black wheel variants with no hubcap texture.
 
-Section 17 is the one we export. Two reasons: it is near-symmetric about X
-(spanning -184..183) whereas section 16 is offset (-172..195, with parts
-centred on x=11), and it carries the detail — 8 roof polygons and 16 door
-polygons against section 16's 1 and 4.
-
-Section 17 is a complete car including wheels. Grouping its polygons by the
-texture they sample lays the whole thing out:
-
-    FRWN88A   z +190..417   front wheel arches
-    FRNT88A   z +441..464   front panel, frontmost
-    BON88A    z +245..402   bonnet
-    WINFRN88  z +123..135   windscreen
-    DR88A     z  -73..122   doors, at x +-184
-    WINSID88  y  +65..95    side windows
-    ROOF88A   y +118..124   roof, highest
-    WINBCK88  z    -248     rear window
-    BKWN88A   z -407..-133  rear wheel arches
-    BOOT88A   z -424..-343  boot
-    BUMP88A   z -441..-427  rear bumper, rearmost
-    unnamed   y  -97..-86   16 polygons at the lowest point: the wheels
-    (no texture)            32 flat-shaded polygons: underside and interior
-
-That resolves the open question about the wheels — they are part of the car
-mesh, textured from a region of VRAM the name table does not name.
-
-How liveries work
------------------
-Every polygon references exactly its own tile's CLUT; there is no sharing to
-untangle. So car 88 renders with no substitution at all — it *is* the shared
-tile set.
-
-For any other car, the pixels stay the same and only the palette changes. The
-part-to-palette mapping below was taken from the CLUT naming (CLUTnnA..E) and
-confirmed by rendering: bit depths line up (CLUTnnA is 8bpp like the body
-tiles, B..E are 4bpp like the rest) and the resulting cars are coherent.
+Liveries work by palette substitution. Every polygon references its own tile's
+CLUT, so car 88 renders with no substitution at all: it owns the shared tile
+set. For any other car the pixels stay the same and only the palette changes:
 
     body       BUMP FRNT FRWN BKWN   8bpp  ->  CLUTnnA
-    bonnet     BON ROOF               4bpp  ->  CLUTnnB
-    boot       BOOT                   4bpp  ->  CLUTnnC
-    windows    WINFRN WINBCK          4bpp  ->  CLUTnnD
-    side glass WINSID                 4bpp  ->  CLUTnnE
+    bonnet     BON ROOF BOOT         4bpp  ->  CLUTnnB
+    rear glass WINBCK                4bpp  ->  CLUTnnC
+    windscreen WINFRN                4bpp  ->  CLUTnnD
+    side glass WINSID                4bpp  ->  CLUTnnE
 
-The door number panel is the exception: it is a different *tile* per car, not
-just a different palette, because the number itself is painted into the
-pixels. DRnnA has identical dimensions to DR88A, so the polygon's UVs are
-translated by the difference between the two tiles' VRAM positions and decoded
-with DRnnA's own palette.
+The door number panel is the exception: it is a different tile per car, not
+just a different palette, because the number is painted into the pixels. DRnnA
+has identical dimensions to DR88A, so the polygon's UVs are translated by the
+difference between the two tiles' VRAM positions.
 
-The wheels keep their original palette for every car — they are not bodywork.
-
-Wheels
-------
-The body mesh has no wheels; they are a separate model attached four times.
-Section 18 is the wheel: two textured hubcap faces at x = +-33 plus eight flat
-quads forming an octagonal tyre tread, all inside a 66 x 134 x 134 box.
-
-Sections 5 and 6 are simplified alternatives — six black quads with a single
-visible side face, at x = +33 and x = -33 respectively, so a right/left pair.
-`FUN_8002b874` binds exactly those two models to four wheel slots
-(ptr[5], ptr[6], ptr[5], ptr[6]), but they carry no hubcap texture and only one
-side face each, so section 18 is what we export.
-
-Section 18 contains **coincident duplicate faces**: polygons 0 and 1 are the
-same two hubcap quads as polygons 10 and 11, with the same UV index, but
-coloured (0,0,0) instead of neutral (128,128,128). The game selects between
-them at draw time; exported together they z-fight and the black pair wins,
-turning every wheel into a black disc. `_deduplicate` drops the darker of any
-two polygons sharing a vertex set and UV index.
-
-Wheel placement is not stored anywhere we can read — the game computes it from
-live suspension state (`DAT_80091028 + car*0x288 + wheel*0x84`). So it has to
-be derived, and the arches are the evidence.
-
-The arches are **painted on flat side panels**, not cut into the geometry, so
-the panel's bounding box says nothing useful about where the wheel goes — an
-earlier attempt used it and put the wheels visibly off. The arch outline lives
-in the FRWN88A and BKWN88A *textures* as a near-black region, so the way to
-find it is to locate that region in texture space and map it back to model
-space through the polygons' UVs.
-
-Fitting an affine UV->XYZ map by least squares over every arch-panel corner
-(the panels are planar, so the fit is well conditioned: mean error 1-11 units)
-and evaluating it at the centre of the dark region gives:
-
-    front arch   x = +-172   y = -36   z = +291    painted radius ~79 units
-    rear arch    x = +-179   y = -95   z = -231    painted radius ~82 units
-
-The painted radius exceeding the wheel's 67 is expected — the arch is drawn
-larger than the tyre. The rear figure for y is not usable: the dark region runs
-into the bottom edge of its tile, so the widest row is clipped and reports the
-tile edge rather than the axle line. A car's axles are level, so the front's
-y = -36 is used for both.
+The wheels keep their original palette for every car.
 """
 
 from __future__ import annotations
@@ -121,27 +41,9 @@ from .vram import pixels_per_halfword
 
 # Body part prefix -> the CLUT letter that recolours it.
 #
-# Derived, not assumed. Six 4bpp tiles have to share four per-car palettes
-# (B..E), so the grouping matters and guessing it produces cars that look
-# almost right. The test: entries in a palette that are car-*independent*
-# (glass, the driver, chrome) must be byte-identical to the corresponding
-# entries of car 88's own tile palette, since car 88 is itself one of the 20.
-# Counting, for every tile and letter, how many of the 16 entries agree with
-# car 88 across all 19 other cars gives an unambiguous answer:
-#
-#     tile          B    C    D    E
-#     BON88A        4    0    1    0
-#     ROOF88A       4    0    1    0
-#     BOOT88A       4    0    1    0
-#     WINFRN88      1    0   13    0
-#     WINBCK88      0   13    0    0
-#     WINSID88      0    0    0    8
-#
-# So B is the shared painted-panel ramp for all three opening panels, and C, D
-# and E are one window type each. Off-diagonal agreement is 0 or 1 throughout.
-#
-# This corrects two earlier assumptions carried over from prior sessions,
-# which had BOOT on C and both WINFRN and WINBCK on D.
+# Six 4bpp tiles share four per-car palettes (B to E), so the grouping matters.
+# B is a shared painted-panel ramp used by all three opening panels; C, D and E
+# are one window type each.
 PART_CLUT_LETTER = {
     "BUMP": "A", "FRNT": "A", "FRWN": "A", "BKWN": "A",
     "BON": "B", "ROOF": "B", "BOOT": "B",
@@ -208,7 +110,7 @@ PLAYER_VARIANTS: dict[str, str | None] = {
 # bodywork but not the door: DR01A is a separate 8bpp tile with a single CLUT of
 # its own, and decoding it with a CLUTnnA body palette produces garbage.
 #
-# The palettes are named P1D1T2 and P1D1T3 — "player 1, door 1, type 2/3". Both
+# The palettes are named P1D1T2 and P1D1T3 - "player 1, door 1, type 2/3". Both
 # are palette-only records (their tile position is the (320,0) staging slot, so
 # only clut_x/clut_y mean anything) and both are present in all 11 track files.
 # Decoding DR01A against them reproduces each variant's colours exactly:
@@ -221,9 +123,9 @@ PLAYER_VARIANTS: dict[str, str | None] = {
 # other than a fourth variant of the player's car.
 PLAYER_DOOR_CLUT = {"2": "P1D1T2", "3": "P1D1T3"}
 
-# A second CLT set, CLT02x2 / CLT02x3, exists in LEV1, LEV4, LEV5, LEVA and
-# LEVB but has no CLUT02x base and no DR02A door tile in those levels — most
-# likely the second car in two-player mode. Not exported; see PLAN.md.
+# A second CLT set, CLT02x2 / CLT02x3, exists in five levels but has no CLUT02x
+# base and no DR02A door tile in them, most likely the second car in two-player
+# mode. Not exported, since the door panel it uses is unknown.
 SECOND_PLAYER_CAR = "02"
 
 
@@ -386,7 +288,7 @@ def resolve_source(textures: LevelTextures, poly: Polygon, uv: UVRecord,
     part = rec.part
 
     # Door number panel: a different tile, not merely a different palette.
-    # The palette source may differ from the tile — the player's variants keep
+    # The palette source may differ from the tile - the player's variants keep
     # DR01A's pixels but recolour them via P1D1T2 / P1D1T3.
     if part == "DR" and livery.door_tile is not None:
         door = livery.door_tile
@@ -486,7 +388,7 @@ def build_car(level: LevelFile, textures: LevelTextures, livery: Livery,
     Build a complete car: body plus four positioned wheels.
 
     Returns a list of objects so each ends up as its own named node in the
-    GLB — the wheels stay separately movable, which matters because their
+    GLB - the wheels stay separately movable, which matters because their
     height is derived rather than read from the game.
     """
     body = build_car_object(level, textures, body_section, livery,

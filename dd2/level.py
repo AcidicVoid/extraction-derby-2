@@ -1,36 +1,22 @@
 """
-level.py — the LEVEL.DAT container.
+The LEVEL.DAT container.
 
-Every LEVEL.DAT in the game — the frontend (LEV0), the eleven race tracks
-(LEV1-LEVB) and the two small auxiliary files (LEVC, LEVF) — uses the same
-container: a fixed table of 29 uint32 offsets at the very start of the file,
-followed by the sections those offsets point at.
+Every LEVEL.DAT uses the same layout: a table of 29 uint32 section offsets at
+the start of the file, followed by the section data. The file is not
+compressed.
 
     +0x00  u32[29]  section offsets, relative to file start
     +0x74           section data
 
-The file is NOT compressed. Two independent confirmations:
-
-  1. In every one of the 14 retail files the 29 offsets are monotonically
-     non-decreasing and all land inside the file.
-  2. The game's loader FUN_80042a48 does nothing but add the load address to
-     each of the 29 words in place. There is no decompression call anywhere
-     in the LEVEL.DAT load path.
-
-The prior project assumed LZSS compression here. It was wrong, and the
-LEVEL_DECOMP.BIN files it produced are meaningless.
-
-Section roles
--------------
-A section is "absent" when its offset equals the next one, i.e. it spans zero
+A section is absent when its offset equals the next one, i.e. it spans zero
 bytes. LEV0 leaves the three track sections absent; the track files use all of
-them. This means one parser covers every file.
+them, so one parser covers every file.
 
     0   terrain      nested table of terrain geometry chunks (tracks only)
-    1   track_data   track section/spline records (tracks only)
-    2   point_grid   world-space i32 XYZ points on a coarse grid (tracks only)
-    3   tex_names    texture name table            -> texnames.py
-    4   uv_table     UV coordinate table           -> uvtable.py
+    1   track_data   track section records (tracks only)
+    2   point_grid   world-space i32 XYZ points along the road (tracks only)
+    3   tex_names    texture name table
+    4   uv_table     UV coordinate table
     5+  model_NN     model blocks: props, cars, wheels, LODs
 """
 
@@ -137,10 +123,6 @@ class LevelFile:
 
     def section(self, index: int) -> Section:
         return self.sections[index]
-
-    def section_bytes(self, index: int) -> bytes:
-        s = self.sections[index]
-        return self.data[s.offset:s.end]
 
     @property
     def model_sections(self) -> list[Section]:

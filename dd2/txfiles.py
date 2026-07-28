@@ -1,25 +1,20 @@
 """
-txfiles.py — the LEVEL.TX0-TX3 tile archive and LEVEL.TXC palette archive.
+The LEVEL.TX0-TX3 tile archive and the LEVEL.TXC palette archive.
 
-LEVEL.TX0-TX3
-=============
-One logical archive split across four files, because the loader streams them
-off the CD in sequence (see FUN_80042bb4: it opens LEVEL.TX0, then loops
-LEVEL.TX1..TX3). TX0 carries the directory; the pixel payload starts in TX0
-after the directory and continues, byte for byte, through TX1, TX2 and TX3
-concatenated.
+LEVEL.TX0-TX3 is one logical archive split across four files because the loader
+streams them off the CD in sequence. TX0 carries the directory; the pixel
+payload starts in TX0 after the directory and continues byte for byte through
+TX1, TX2 and TX3 concatenated.
 
     TX0:  u32 count
           count x 16-byte tile descriptors
           payload (first part)
-    TX1:  payload (continued)
-    TX2:  payload (continued)
-    TX3:  payload (continued)
+    TX1..TX3:  payload continued
 
-Tile descriptor (16 bytes, eight u16 fields)
+Tile descriptor (16 bytes, eight u16 fields):
 
     +0x00  u16  bpp        4 or 8
-    +0x02  u16  width      PIXELS
+    +0x02  u16  width      pixels
     +0x04  u16  height     scanlines
     +0x06  u16  vram_x     destination X, in halfwords
     +0x08  u16  vram_y     destination Y
@@ -27,46 +22,26 @@ Tile descriptor (16 bytes, eight u16 fields)
     +0x0C  u16  clut_y     palette destination Y, or 0xFFFE for "no palette"
     +0x0E  u16  pad        always 0
 
-Payload block per tile, in descriptor order
+Payload block per tile, in descriptor order:
 
     "CLUT"                 4-byte ASCII tag
-    palette                32 bytes (4bpp, 16 colours) or 512 (8bpp, 256)
+    palette                32 bytes (4bpp) or 512 bytes (8bpp)
     "TEXT"                 4-byte ASCII tag
-    pixels                 width*height/2 bytes (4bpp) or width*height (8bpp)
+    pixels                 width*height/2 (4bpp) or width*height (8bpp)
 
-Verification
-------------
-Across all 14 levels: every block carries both magic tags, the payload is
-consumed to the exact byte, no two tiles overlap in VRAM, and none leaves the
-1024x512 bounds. Most importantly, **every resident record of the LEVEL.DAT
-texture name table matches a tile descriptor here exactly** on
-(vram_x, vram_y, width, height, bpp) — 200/200 in LEV0, 194/194 in LEV1, and
-so on. Two independently parsed formats agreeing on every field is the
-strongest evidence available that both are read correctly.
+A descriptor with clut_y == 0xFFFE supplies no palette of its own. Its palette
+bytes are still present in the stream but must not be uploaded; the tile
+borrows a palette uploaded by another tile or by the TXC.
 
-The TX archive holds more tiles than the name table names (378 vs 194 in
-LEV1); the surplus is unnamed track surface texture.
-
-A descriptor with clut_y == 0xFFFE supplies no palette of its own — its
-32/512 palette bytes are still present in the stream but must not be uploaded.
-Around 40 tiles per level are like this; they borrow a palette that another
-tile or the TXC uploads.
-
-
-LEVEL.TXC
-=========
-Extra palettes uploaded on top of whatever TX0-TX3 established. This is the
-mechanism behind per-car liveries: one shared set of body tiles, many CLUTs.
+LEVEL.TXC holds extra palettes uploaded on top of what TX0-TX3 established,
+which is the mechanism behind per-car liveries:
 
     u32 count
-    count x 8-byte entries:  u16 bpp, u16 vram_x, u16 vram_y, u16 pad(=0)
+    count x 8-byte entries:  u16 bpp, u16 vram_x, u16 vram_y, u16 pad
     palette stream: 32 bytes per 4bpp entry, 512 per 8bpp, in entry order
 
-Sizes match exactly in 11 of 14 levels. LEV2, LEV7 and LEV8 carry 2400, 1360
-and 1360 bytes of *unreferenced* trailing data beyond what their entry count
-describes — filled with 0xFC1F (magenta) and 0xFFFF, the classic unused-slot
-pattern. We consume exactly what the table describes and report the rest as
-slack rather than guessing at extra entries.
+Three levels carry unreferenced filler beyond what their entry count describes.
+Only what the table describes is consumed; the rest is reported as slack.
 """
 
 from __future__ import annotations
@@ -312,7 +287,7 @@ class ClutUpload:
 
 
 class ClutArchive:
-    """LEVEL.TXC — additional CLUT uploads."""
+    """LEVEL.TXC - additional CLUT uploads."""
 
     def __init__(self, data: bytes, source: str = TXC_NAME):
         self.source = source

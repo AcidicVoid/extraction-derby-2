@@ -1,17 +1,18 @@
 """
-terrain.py — track terrain: LEVEL.DAT section 0.
+Track terrain: LEVEL.DAT section 0.
 
 Section 0 opens with a nested table of chunk offsets, and each chunk holds a
-list of positioned model blocks. Assembled, they are the track.
+list of model blocks placed at absolute world positions. Assembled, they are
+the complete track including the drivable road.
 
-Section 0 layout
-----------------
-    u32           table size in bytes (so table_size / 4 = chunk count)
+Section 0 layout:
+
+    u32           table size in bytes (table_size / 4 = chunk count)
     u32 x N       chunk offsets, relative to the start of section 0
     ...           chunk payloads
 
-Chunk payload, after decompression where applicable
----------------------------------------------------
+Chunk payload, after decompression where applicable:
+
     u32           record count, never more than 32
     per record, 16 bytes:
         +0x00  u32  offset of a model block, relative to the chunk start
@@ -19,35 +20,16 @@ Chunk payload, after decompression where applicable
         +0x08  i32  world Y
         +0x0C  i32  world Z
 
-So terrain is not a heightmap or a tiled grid — it is an instanced scene of
-small meshes, each placed at an absolute world position. Every record offset in
-every chunk resolves to a valid 0x2C model block, which means `dd2.model` reads
-terrain geometry with no changes.
+Every record offset resolves to a valid 0x2C model block, so terrain geometry
+is read by dd2.model unchanged.
 
-Two storage variants
---------------------
-`FUN_80026098` branches on the level number:
+Circuit tracks (levels 0-7) store their chunks LZSS compressed; arena tracks
+(levels 8-B) store them plainly. Both use the same record format. The variant
+is detected from the data: an uncompressed chunk begins with a record count of
+32 or less, a compressed one with its decompressed size, which is thousands.
 
-    levels 0-7    circuits — chunks are LZSS compressed (see dd2/lzss.py)
-    levels 8-B    arenas   — chunks are stored plainly
-
-Both then go through the same parser, `FUN_80025454`. Entropy confirms the
-split: section 0 measures 7.3-7.6 bits/byte on LEV1-LEV7 and 5.8-5.9 with
-about 30% zero bytes on LEV8-LEVB. Rather than hard-code the level number we
-detect it from the data — an uncompressed chunk begins with a record count of
-32 or less, a compressed one begins with its decompressed size, which is
-thousands. The two ranges cannot be confused.
-
-Streaming, and why we ignore it
--------------------------------
-The game never holds the whole track. `FUN_80025cc8` walks a 192-entry linked
-list of track sections (section 1), reads up to two chunk indices from each,
-and keeps at most 14 chunks resident, swapping them as the player drives. For
-extraction we simply take the union of all chunks, which is the complete track.
-
-Placement: use `TerrainInstance.origin`, not the raw position words. Only the
-coarse half of each word is the object's translation — see
-`coarse_translation` below for the derivation and the measurements.
+The game streams chunks in and out as the player drives, keeping at most 14
+resident. For extraction the union of all chunks is taken.
 """
 
 from __future__ import annotations
@@ -80,20 +62,10 @@ def coarse_translation(value: int) -> int:
         coarse (int)   (value & 0xFFFF8000) + 0x4000     -> object translation
         fine   (short) (value & 0x7FFF)     + 0xC000     -> a separate array
 
-    The two sum back to `value`, which is what first suggested the plain signed
-    value was the position. It is not: only the **coarse** half is the object's
-    translation. The fine half goes to a different array of shorts and is not a
-    vertex offset, so adding the raw value double-counts the low 15 bits.
-
-    Measured against the road surface, for scenery within 1500 units of it:
-
-        raw value + vertex            median |dy| 16073, mean 15410
-        coarse(value) + vertex        median |dy|   202, mean   328
-
-    The 16073 is essentially 0x4000 — the whole scene sat one coarse step below
-    the road. The sample count is the stronger signal: correcting this puts
-    5999 scenery vertices next to the road instead of 2155, so roughly three
-    times as much scenery lands where it belongs.
+    The two sum back to `value`, but only the coarse half is the object's
+    translation. The fine half goes to a separate array of shorts and is not a
+    vertex offset, so adding the raw word double-counts the low 15 bits and
+    drops the object 0x4000 below where it belongs.
     """
     signed = value & 0xFFFF8000
     if signed & 0x80000000:
@@ -139,11 +111,6 @@ class TerrainChunk:
     compressed: bool
     data: bytes              # payload, decompressed if it needed to be
     instances: list[TerrainInstance] = field(default_factory=list)
-
-    @property
-    def record_count(self) -> int:
-        return len(self.instances)
-
 
 class Terrain:
     """Section 0 of a track LEVEL.DAT, fully decoded."""
@@ -239,8 +206,8 @@ class Terrain:
         ]
 
         # A model block carries no length, so its extent is "up to the next
-        # model in the chunk". Records may share an offset — the same mesh
-        # placed more than once — so work from the sorted distinct offsets.
+        # model in the chunk". Records may share an offset - the same mesh
+        # placed more than once - so work from the sorted distinct offsets.
         # The last block runs to the end of the chunk. The parser insists the
         # polygon stream lands exactly on the end it is given, which turns this
         # into a strong check rather than an assumption.

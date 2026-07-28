@@ -1,40 +1,16 @@
 """
-trackmodel.py — assemble a track's scenery into textured geometry.
+Assemble a track into textured geometry.
 
-Section 0 gives a list of model blocks each placed at a world position (see
-dd2/terrain.py). This module turns that into renderable objects, grouping
-polygons by the texture they sample so each group becomes one primitive with
-its own cropped, palette-applied image — the same approach `dd2.carmodel` uses
-for cars, minus the livery substitution, and extended to walk many models with
-per-instance offsets.
+Section 0 gives a list of model blocks each placed at a world position. This
+module groups their polygons by the texture they sample, so each group becomes
+one primitive with its own cropped, palette-applied image.
 
-What section 0 actually contains
---------------------------------
-The **complete track**, drivable road included:
+Section 0 contains the complete track: the road ribbon with its lane markings
+and banked walls, the surrounding landscape, grandstands, buildings, hoardings
+and barriers.
 
-  * the road ribbon itself, tarmac with lane markings and banked walls
-  * large ground panels, median extent about 23 700 units, painted with dirt
-    and scrub-grass — the land around the circuit
-  * grandstands, buildings, advertising hoardings, barriers
-
-Confirmed by projecting section 2's path points straight down onto this
-geometry: **all 2105 of them land on a triangle, with median and mean vertical
-offset of exactly 0**. Section 2 is therefore a path sampled on the road
-surface — a racing line or collision reference — and not a separate mesh that
-needs building. Nothing is missing from section 0.
-
-Beware flat-shaded previews. Drawn in a single colour with a painter's
-algorithm the road blends into the surrounding ground and the scene reads as
-disconnected fragments with holes in it. Both impressions are artefacts of the
-preview; a z-buffered render shows a continuous circuit.
-
-Placement uses `TerrainInstance.origin`, the **coarse** half of each position
-word, not the raw value — see `dd2.terrain.coarse_translation`. Getting this
-wrong is subtle: the raw value still lays the scenery out in roughly the right
-ring around the circuit, so a top-down view looks broadly plausible, but every
-piece is displaced by up to 0x8000 and the whole scene sits 0x4000 below the
-road. The symptom is scenery that reads as scattered fragments rather than a
-contiguous landscape.
+Placement uses TerrainInstance.origin, the coarse half of each position word,
+never the raw value. See dd2.terrain.coarse_translation.
 """
 
 from __future__ import annotations
@@ -85,8 +61,8 @@ def build_placed_object(level: LevelFile, textures: LevelTextures,
 
     Takes explicit origins rather than TerrainInstance, because only terrain
     placement goes through the coarse/fine split. Props are positioned by other
-    means and must not have `coarse_translation` applied — it maps 0 to 0x4000,
-    which would displace a prop built "at the origin" by 64 output units.
+    means and must not have coarse_translation applied, which maps 0 to 0x4000
+    and would displace a prop built at the origin.
 
     Grouping is by (bit depth, CLUT position) rather than per model: the same
     palette is shared by thousands of polygons across many models, so grouping
@@ -222,8 +198,8 @@ def _untextured_primitive(members, scale: float) -> Primitive3D:
     return prim
 
 
-# Sections 5..20 are the shared car set — wheels, dust decals, car LODs, the
-# detachable bonnet and boot — and are exported as part of the cars. Anything
+# Sections 5..20 are the shared car set - wheels, dust decals, car LODs, the
+# detachable bonnet and boot - and are exported as part of the cars. Anything
 # from 21 up is a track-specific prop.
 FIRST_PROP_SECTION = 21
 
@@ -234,11 +210,9 @@ def build_prop_object(level: LevelFile, textures: LevelTextures, section: int,
     """
     Build one standalone prop model at the origin.
 
-    These are the moving trackside objects — LEV1's head and signpost, LEV4's
-    mine carts with their position markers, LEV8's banner. They are *not*
-    instanced in section 0, which is why they are absent from the track meshes:
-    the game positions them at runtime, so they have no stored placement to
-    read. Each is exported on its own, untransformed, for manual placement.
+    These are the moving trackside objects: LEV1's head and signpost, LEV4's
+    mine carts and LEV8's banner. They are not instanced in section 0, so they
+    have no stored placement. Each is exported untransformed at the origin.
     """
     model = level.model(section)
     return build_placed_object(level, textures, [(model, (0, 0, 0))],
@@ -255,8 +229,8 @@ def prop_sections(level: LevelFile) -> list[int]:
 # --------------------------------------------------------------------------
 # LEV1's animated props
 # --------------------------------------------------------------------------
-# `FUN_8001e278` has a `switch (level)` whose **case 1** — Pine Hills — draws
-# two extra objects every frame:
+# FUN_8001e278 has a switch on the level number whose case 1 draws two extra
+# objects every frame:
 #
 #     FUN_8001f8c8(&DAT_800848dc, rot, &DAT_8006ec78)   ptr[21], the head
 #     FUN_8001f8c8(&DAT_8008c464, rot, &DAT_8006ec68)   ptr[22], the signpost
@@ -264,7 +238,7 @@ def prop_sections(level: LevelFile) -> list[int]:
 # (`FUN_8001d944` is what binds those two handles to ptr[21] and ptr[22].)
 #
 # Both positions read from the executable as the same VECTOR, (55504, 3240,
-# 9956), which lands inside LEV1's terrain bounds — the sign is the post and the
+# 9956), which lands inside LEV1's terrain bounds - the sign is the post and the
 # head sits on it. Both rotation seeds are the SVECTOR (512, 0, 0): a fixed
 # 45-degree tilt about X, since 512 of 4096 units is an eighth of a turn.
 #
@@ -273,8 +247,8 @@ def prop_sections(level: LevelFile) -> list[int]:
 #     phase += 0x40            every frame, wrapping at 4096
 #     rot.z  = rsin(phase) >> 4
 #
-# `rsin` returns a 1.12 fixed-point sine, so `>> 4` gives +-256 units — the two
-# objects rock +-22.5 degrees. 4096 / 0x40 = **64 frames per cycle**, which at
+# `rsin` returns a 1.12 fixed-point sine, so `>> 4` gives +-256 units - the two
+# objects rock +-22.5 degrees. 4096 / 0x40 = 64 frames per cycle, which at
 # the NTSC 30 Hz this build runs at is about 2.13 seconds.
 PROP_POSITION = (55504, 3240, 9956)
 PROP_ROTATION_SEED = (512, 0, 0)
@@ -342,7 +316,7 @@ def build_track(level: LevelFile, textures: LevelTextures,
     """
     Build the objects making up one track.
 
-    Section 0 carries the whole track — road, landscape and structures — so
+    Section 0 carries the whole track - road, landscape and structures - so
     this is the complete visual model. Splitting the road out as its own object
     would need a way to tell road polygons from the rest; section 2's path can
     serve as that classifier if it is ever wanted.

@@ -1,35 +1,18 @@
 """
-glb.py — write meshes to self-contained binary glTF (.glb).
+Write meshes to self-contained binary glTF (.glb).
 
-Textures are embedded as PNG inside the GLB buffer, so a single file carries
-the whole model with nothing to resolve at load time.
+Textures are embedded as PNG inside the GLB buffer, so one file carries the
+whole model with nothing to resolve at load time.
 
-Coordinate conversion from DD2 to glTF
---------------------------------------
-DD2 model space, established from the car's own texture layout: ROOF88A sits
-at y +124 and the wheels at y -97, so **+Y is up**; FRNT88A sits at z +464 and
-the rear bumper at z -441, so **+Z is the front**.
+DD2 model space is Y-up with +Z forward. glTF is also Y-up but conventionally
+faces -Z, so the scene is rotated 180 degrees about Y: (x, y, z) -> (-x, y, -z).
+That is a proper rotation, so triangle winding is preserved and normals stay
+valid. Winding is left as authored, which is counter-clockwise and outward.
 
-glTF is also Y-up but conventionally faces -Z, so we rotate 180 degrees about
-Y: (x, y, z) -> (-x, y, -z). That is a proper rotation, determinant +1, so
-triangle winding is preserved and normals stay valid. A mirror such as
-(x, y, -z) would have required flipping every winding as well, which is an
-easy thing to get subtly wrong.
-
-Winding is left as authored. Checked against the model's own normal data on
-LEV1 section 17: `cross(v1-v0, v2-v0)` agrees in sign with the stored face
-normal for 115 polygons and disagrees for 8, and the stored normals point away
-from the model centroid 114 to 9. So the authored order is counter-clockwise /
-outward, which is what glTF expects.
-
-Vertex colours
---------------
 PSX modulates texture colour by the primitive colour, with 0x80 meaning
-"unchanged" — so the neutral value is 128, not 255. We emit COLOR_0 as
-colour/128, which makes the common 0x808080 exactly 1.0 and leaves the glTF
-product `baseColorTexture * COLOR_0` faithful to the hardware. Values above
-128 would brighten past 1.0, so they are clamped; that affects a small number
-of polygons and is preferable to darkening everything by using /255.
+unchanged, so COLOR_0 is emitted as colour/128. That makes the common 0x808080
+exactly 1.0 and leaves the glTF product baseColorTexture * COLOR_0 faithful to
+the hardware. Values above 128 are clamped.
 """
 
 from __future__ import annotations
@@ -194,7 +177,7 @@ class GLBBuilder:
         return len(self.gltf.accessors) - 1
 
     def _sampler(self) -> int:
-        """One shared sampler: nearest filtering, clamped — PSX look."""
+        """One shared sampler: nearest filtering, clamped - PSX look."""
         if self._sampler_index is None:
             self.gltf.samplers.append(
                 Sampler(magFilter=NEAREST, minFilter=NEAREST,

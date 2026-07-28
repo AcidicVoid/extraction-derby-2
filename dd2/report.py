@@ -1,5 +1,5 @@
 """
-report.py — human-readable dumps of what we parsed.
+report.py - human-readable dumps of what we parsed.
 
 These files are written to <output>/logs. They are the primary instrument for
 checking format assumptions: run the extractor, read the report, and diff it
@@ -35,7 +35,7 @@ def _fmt_texnames(level: LevelFile) -> list[str]:
     resident = table.resident()
     non_resident = table.non_resident()
 
-    lines = ["", RULE, f"Texture name table — {len(table)} records", THIN,
+    lines = ["", RULE, f"Texture name table - {len(table)} records", THIN,
              f"resident in VRAM     : {len(resident)}",
              f"non-resident         : {len(non_resident)} "
              f"(staging slot or palette-only)",
@@ -82,7 +82,7 @@ def _fmt_texnames(level: LevelFile) -> list[str]:
 
 def _fmt_uvtable(level: LevelFile) -> list[str]:
     table = level.uv_table
-    lines = ["", RULE, f"UV table — {len(table)} records", THIN]
+    lines = ["", RULE, f"UV table - {len(table)} records", THIN]
     if not table:
         lines.append("  (section absent)")
         return lines
@@ -107,7 +107,7 @@ def _fmt_models(level: LevelFile) -> list[str]:
     total_verts = sum(len(m.vertices) for m in models.values())
 
     lines = ["", RULE,
-             f"Model blocks — {len(models)} present, "
+             f"Model blocks - {len(models)} present, "
              f"{total_verts} vertices, {total_polys} polygons", THIN,
              f"{'sec':>3}  {'offset':>9} {'bytes':>7} {'verts':>6} "
              f"{'norms':>6} {'polys':>6} {'tri':>5} {'quad':>5} {'texd':>5}  "
@@ -167,7 +167,7 @@ def _fmt_models(level: LevelFile) -> list[str]:
                     summary += f", (unnamed VRAM) x{unnamed}"
             lines.append(f"  sec {index:>2}: {summary}")
 
-    # Distinct CLUT descriptors referenced by textured polygons — this is the
+    # Distinct CLUT descriptors referenced by textured polygons - this is the
     # bridge from geometry to the per-car livery palettes.
     cluts = set()
     for m in models.values():
@@ -224,7 +224,7 @@ def write_level_report(level: LevelFile, dest: Path, title: str) -> int:
     Write a full text report for one level file.
     Returns the number of validation problems found.
     """
-    lines = [RULE, f"{title}  —  {level.name}",
+    lines = [RULE, f"{title}  -  {level.name}",
              f"size {len(level.data)} bytes  |  "
              f"{'TRACK' if level.is_track else 'non-track'}", RULE, ""]
     lines += _fmt_section_table(level)
@@ -303,7 +303,7 @@ def write_index(levels: dict[str, LevelFile], dest: Path) -> None:
             f"{len(lv.tex_names):>9} {len(lv.uv_table):>7}"
         )
 
-    # Which car numbers appear in which levels — needed for the car milestone.
+    # Which car numbers appear in which levels - needed for the car milestone.
     lines += ["", THIN, "Car numbers referenced by each level", THIN]
     for key in sorted(levels):
         cars = levels[key].tex_names.car_numbers()

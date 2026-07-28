@@ -1,31 +1,23 @@
 """
-vram.py — a model of PlayStation video RAM.
+A model of PlayStation video RAM.
 
-The PS1 GPU has one flat 1024 x 512 framebuffer of 16-bit halfwords, and
-*everything* lives in it: the visible framebuffer, texture pixels, and colour
-lookup tables. Textures are addressed by halfword position but their pixels
-are packed 4 or 8 bits wide, so a 4bpp tile 64 pixels across occupies only 16
-halfwords. Keeping that distinction straight is the whole job of this module.
+The PS1 GPU has one flat 1024x512 framebuffer of 16-bit halfwords holding
+everything: the visible framebuffer, texture pixels and colour lookup tables.
+Textures are addressed by halfword position but their pixels are packed 4 or 8
+bits wide, so a 4bpp tile 64 pixels across occupies only 16 halfwords. Keeping
+that distinction straight is the main job of this module.
 
-Colour format is BGR555 packed into a halfword:
+Colour is BGR555 packed into a halfword:
 
     bit  0-4    red
     bit  5-9    green
     bit 10-14   blue
-    bit 15      STP — "semi-transparent" flag, used with blending modes
+    bit 15      STP, the semi-transparency flag
 
-Transparency: for a paletted texture the GPU treats a palette entry of
-0x0000 (all channels zero, STP clear) as fully transparent. That is the rule
-applied here. Note this means genuine black must be stored as 0x8000, and the
-game does exactly that. In LEV1, 109 of 340 palettes use 0x0000 at index 0.
-
-A tempting false lead: 63 of LEV1's TXC palettes hold 0x83E0 — pure green
-with STP set — at index 0, and WINFRN88 holds 0xF360 (bright cyan) there.
-Both look exactly like a chroma key. They are not. PS1 hardware keys only on
-0x0000, and these are opaque colours. Checked directly: the 8bpp car body
-tiles that reference those TXC palettes (BUMP88A, FRNT88A, FRWN88A, BKWN88A)
-never use index 0 at all, so the slot is simply unused. Treating green as
-transparent would have been wrong and would have punched holes in the cars.
+For a paletted texture the GPU treats a palette entry of 0x0000 as fully
+transparent. That is the only transparency rule; genuine black is stored as
+0x8000. Palettes do contain other colours that look like chroma keys, such as
+pure green, but they are opaque.
 """
 
 from __future__ import annotations
@@ -93,7 +85,7 @@ class VRAM:
     A 1024 x 512 halfword framebuffer.
 
     Uploads are tracked so we can tell which halfwords actually received data
-    and report on the rest — unwritten VRAM means a tile source we have not
+    and report on the rest - unwritten VRAM means a tile source we have not
     accounted for.
     """
 
@@ -152,7 +144,7 @@ class VRAM:
         """
         Read a tile's palette indices as a (height, width_px) uint8 array.
 
-        4bpp packs two pixels per byte, low nibble first — that ordering is
+        4bpp packs two pixels per byte, low nibble first - that ordering is
         what makes tiles come out un-mirrored.
         """
         per_hw = pixels_per_halfword(bpp)

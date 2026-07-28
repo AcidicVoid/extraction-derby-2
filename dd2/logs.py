@@ -1,5 +1,5 @@
 """
-logs.py — logging setup.
+logs.py - logging setup.
 
 Console output is deliberately sparse: only high-level progress and real
 problems. Everything detailed (pointer maps, per-tile dumps, validation

@@ -1,23 +1,19 @@
 """
-textures.py — assemble a level's VRAM and pull images out of it.
+Assemble a level's VRAM and read images out of it.
 
-Ties together the three pieces:
+Combines the three sources:
 
-    LEVEL.TX0-TX3   tile pixels + their palettes   -> txfiles.TileArchive
-    LEVEL.TXC       extra palette uploads          -> txfiles.ClutArchive
-    LEVEL.DAT s.3   names for a subset of tiles    -> texnames.TextureNameTable
+    LEVEL.TX0-TX3   tile pixels and their palettes
+    LEVEL.TXC       extra palette uploads
+    LEVEL.DAT s.3   names for a subset of the tiles
 
-Upload order reproduces the game's: tiles first, then TXC on top. TXC exists
-precisely to overwrite palettes that TX0-TX3 just wrote, so doing it in the
-other order would silently produce the wrong colours for every car.
+Upload order matters and reproduces the game's: tiles first, then TXC on top.
+TXC exists to overwrite palettes that TX0-TX3 just wrote, so reversing the
+order produces the wrong colours for every car.
 
-Two ways to get an image out:
-
-    named_tile(name)        via the name table — for car parts and UI, where
-                            we know what we are looking at
-    tile_image(tile)        via a TX descriptor — works for all tiles,
-                            including the unnamed track surface texture that
-                            the name table does not cover
+The name table only covers named assets such as car parts and UI elements.
+Most of VRAM is unnamed track surface texture, reachable only through the UV
+table, so tiles can also be read directly from a TX descriptor.
 """
 
 from __future__ import annotations
@@ -67,7 +63,7 @@ class LevelTextures:
         Decode a TX tile from VRAM.
 
         Read back from VRAM rather than straight from the payload, so the
-        result reflects any palette that a later upload replaced — which is
+        result reflects any palette that a later upload replaced - which is
         the whole point of the TXC pass.
         """
         if not tile.has_clut:
@@ -119,43 +115,6 @@ class LevelTextures:
 
         return None, None
 
-    def named_tile(self, name: str) -> Image.Image:
-        """Decode a tile by its name-table entry."""
-        if self.names is None:
-            raise FormatError("no texture name table was supplied")
-        rec = self.names.get(name)
-        if rec is None:
-            raise KeyError(f"no texture named {name!r}")
-        return self.record_image(rec)
-
-    def record_image(self, rec: TexName) -> Image.Image:
-        """Decode the tile a name-table record points at."""
-        if not rec.is_resident:
-            raise FormatError(
-                f"{rec.name} is not resident in VRAM (it is a palette-only or "
-                f"staged record); there are no pixels to read")
-        if not rec.has_clut:
-            raise FormatError(
-                f"{rec.name} names no palette of its own (clut_y is the "
-                f"0xFFFE sentinel); pair it with a CLUT record and use "
-                f"record_image_for_car() or tile_image_with_clut()")
-        return self.vram.tile_image(rec.vram_x, rec.vram_y, rec.width,
-                                    rec.height, rec.bpp,
-                                    rec.clut_x, rec.clut_y)
-
-    def record_image_for_car(self, rec: TexName, car_clut: TexName
-                             ) -> Image.Image:
-        """
-        Decode a shared body tile using another record's palette.
-
-        This is the livery mechanism in one call: `rec` is a car-88 body tile
-        such as BUMP88A, and `car_clut` is the CLUTnnA record whose palette
-        recolours it.
-        """
-        return self.vram.tile_image(rec.vram_x, rec.vram_y, rec.width,
-                                   rec.height, rec.bpp,
-                                   car_clut.clut_x, car_clut.clut_y)
-
     # -- diagnostics --------------------------------------------------------
 
     def validate(self) -> list[str]:
@@ -182,10 +141,9 @@ class LevelTextures:
         Inconsistencies in the source data that we handle deliberately.
 
         Kept apart from validate() so a known, benign quirk in the retail files
-        does not mask a real parsing failure. Currently one case exists across
-        all 14 levels: LEV0's MEMLOAD is assigned CLUT (320,490) by its TX
-        descriptor and (320,488) by the name table. We follow the name table
-        per resolve_clut()'s ordering.
+        does not mask a real parsing failure. One case exists: LEV0's MEMLOAD is
+        assigned a different CLUT by its TX descriptor than by the name table.
+        The name table wins, per resolve_clut()'s ordering.
         """
         notes: list[str] = []
         if self.names is None:
@@ -200,7 +158,7 @@ class LevelTextures:
                 notes.append(
                     f"CLUT disagreement for {rec.name}: TX descriptor says "
                     f"({tile.clut_x},{tile.clut_y}), name table says "
-                    f"({rec.clut_x},{rec.clut_y}) — using the name table")
+                    f"({rec.clut_x},{rec.clut_y}) - using the name table")
         return notes
 
     def summary(self) -> dict:
@@ -251,7 +209,7 @@ def export_tiles(textures: LevelTextures, dest: Path,
     Write every tile in the level as a PNG, sorted into subdirectories.
 
         named/        tiles the name table names, in full colour
-        unnamed/      everything else — road surface, props, scenery
+        unnamed/      everything else - road surface, props, scenery
         unpaletted/   greyscale index maps for tiles whose palette is unknown
 
     Every tile in the archive is accounted for in exactly one directory, so

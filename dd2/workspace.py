@@ -1,5 +1,5 @@
 """
-workspace.py — output directory management.
+workspace.py - output directory management.
 
 The output directory is wiped at the start of every run so results can never
 be a mix of old and new. Because wiping a directory is destructive, we refuse

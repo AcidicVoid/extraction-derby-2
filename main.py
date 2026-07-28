@@ -1,5 +1,5 @@
 """
-Extraction Derby 2 — command line entry point.
+Extraction Derby 2 - command line entry point.
 
     uv run main.py <path_to_DIRINFO>
 
@@ -258,7 +258,7 @@ def extract_tracks(gamedata_dir: Path, levels: dict[str, LevelFile],
     """
     Export one GLB per track. Returns (written, problems).
 
-    Section 0 holds the whole track — road, landscape and structures — so each
+    Section 0 holds the whole track - road, landscape and structures - so each
     file is a single complete scene.
     """
     log = logs.get("tracks")
@@ -290,7 +290,7 @@ def extract_tracks(gamedata_dir: Path, levels: dict[str, LevelFile],
 
         # Every terrain polygon must survive into the mesh; a mismatch means
         # geometry was silently dropped somewhere in the grouping. Compare the
-        # terrain object alone — animated props are extra nodes built from
+        # terrain object alone - animated props are extra nodes built from
         # model sections, not from terrain instances.
         expected = sum(1 if p.corners == 3 else 2
                        for inst in terrain.instances
@@ -403,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"tracks    {tracks} GLBs -> {output_dir / 'tracks'}")
 
     if problems:
-        print(f"WARNING   {problems} validation problem(s) — see {log_dir}")
+        print(f"WARNING   {problems} validation problem(s) - see {log_dir}")
         return 1
 
     print("validated all sections OK")

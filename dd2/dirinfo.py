@@ -1,27 +1,20 @@
 """
-dirinfo.py — DIRINFO archive container.
+The DIRINFO archive container.
 
-DIRINFO is the single monolithic archive shipped on the DD2 disc. It is
-self-describing: a directory table sits at the very front of the file and the
-payload of every entry lives further inside the *same* file, addressed by CD
+DIRINFO is the single monolithic archive shipped on the disc. It is
+self-describing: a directory table sits at the front of the file and the
+payload of every entry lives further inside the same file, addressed by CD
 sector number.
 
-Layout
-------
     offset 0x0000   directory table: N x 24-byte entries, terminated by an
                     entry whose 18-byte name field is all NUL
     sector 0..      payload data, each entry starting on a 2048-byte boundary
 
-Directory entry (24 bytes)
---------------------------
-    +0x00  char[18]  name, NUL-padded, backslash-separated sub-paths
-    +0x12  u16       start sector (byte offset = sector * 2048)
-    +0x14  u32       size in bytes
+Directory entry (24 bytes):
 
-Verified against the retail disc image: 110 entries, no overlapping payloads,
-no entry reaching past the end of the file, and the entries tile the file with
-only 2028 bytes of trailing slack. The u16 sector field is sufficient because
-the highest sector used is 7906.
+    +0x00  char[18]  name, NUL-padded, backslash-separated sub-paths
+    +0x12  u16       start sector, byte offset = sector * 2048
+    +0x14  u32       size in bytes
 """
 
 from __future__ import annotations
@@ -116,7 +109,7 @@ class DirInfo:
         else:
             # Loop ran off the end of the buffer without hitting a terminator.
             raise FormatError(
-                "DIRINFO directory table has no terminator entry — "
+                "DIRINFO directory table has no terminator entry - "
                 "this file is probably not a DIRINFO archive"
             )
 

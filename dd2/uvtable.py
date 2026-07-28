@@ -1,25 +1,18 @@
 """
-uvtable.py — the UV coordinate table (LEVEL.DAT section 4).
+The UV coordinate table, LEVEL.DAT section 4.
 
 Textured polygons do not carry their own UVs. They carry an index into this
-shared table, and each table record supplies a texture page plus four UV
-pairs — enough for a quad; triangles use the first three.
+shared table, and each record supplies a texture page plus four UV pairs,
+enough for a quad; triangles use the first three.
 
-Record layout (12 bytes), verified on 13 of 14 level files
------------------------------------------------------------
+Section layout is u32 count followed by count 12-byte records:
+
     +0x00  u32  tpage      PSX texture page descriptor
     +0x04  u8   u0, v0
     +0x06  u8   u1, v1
     +0x08  u8   u2, v2
     +0x0a  u8   u3, v3
 
-Section layout: u32 count, then count * 12 bytes. Computed size matches the
-section span exactly for every level that has this section. LEVC has a
-zero-length section 4 (it is a small non-track file), which we treat as
-"absent" rather than as a size mismatch.
-
-TPage descriptor
-----------------
 The PSX GPU packs the texture page origin and colour depth into one value:
 
     bits 0-3   x_base / 64      -> x_base = (tpage & 0xF) * 64  halfwords
@@ -73,9 +66,6 @@ class UVRecord:
     index: int
     tpage: TPage
     uvs: tuple[tuple[int, int], ...]   # always 4 pairs
-
-    def triangle_uvs(self) -> tuple[tuple[int, int], ...]:
-        return self.uvs[:3]
 
     def __str__(self) -> str:
         pairs = " ".join(f"({u},{v})" for u, v in self.uvs)

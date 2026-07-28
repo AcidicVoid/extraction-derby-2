@@ -1,5 +1,5 @@
 """
-render_glb.py — minimal software renderer for verifying exported GLBs.
+render_glb.py - minimal software renderer for verifying exported GLBs.
 
 A development aid, not part of the extraction pipeline. It exists so model
 output can be checked without a GPU or a DCC application: if the geometry,
