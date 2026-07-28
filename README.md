@@ -71,7 +71,7 @@ uv run tools/render_glb.py output/tracks --sheet tracks.png
 ```
 
 ## Support
-Reverse engineering is a lot of work, even with some AI support for data analysis.  
+Reverse engineering is a lot of work, even with AI support.  
 If you’d like to support me, feel free to toss me a coin for a tea or a burger.  
 Thanks a lot for considering!
 
