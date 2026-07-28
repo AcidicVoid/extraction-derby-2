@@ -27,7 +27,14 @@ from dd2 import logs, report, workspace
 from dd2.binio import FormatError
 from dd2.dirinfo import DirInfo
 from dd2.level import LevelFile
+from dd2.carmodel import DEFAULT_SCALE, build_car, build_livery
+from dd2.glb import write_glb
 from dd2.textures import LevelTextures, export_tiles
+
+# The car mesh lives in the track files. LEV1 section 17 is the complete,
+# symmetric, full-detail car; see dd2/carmodel.py for how that was determined.
+CAR_SOURCE_LEVEL = "LEV1"
+CAR_SECTION = 17
 
 
 def human(n: float) -> str:
@@ -181,11 +188,54 @@ def extract_textures(gamedata_dir: Path, levels: dict[str, LevelFile],
             problem_total += 1
         written_total += stats.total
 
-        # A full-VRAM dump makes gaps and stray uploads obvious at a glance.
-        textures.vram.raw_image().save(dest / "_vram.png")
-
     report.write_texture_index(summaries, log_dir / "textures.txt")
     return written_total, problem_total
+
+
+def extract_cars(gamedata_dir: Path, levels: dict[str, LevelFile],
+                 out_dir: Path, source_level: str, section: int,
+                 scale: float) -> tuple[int, int]:
+    """
+    Export one textured GLB per car livery. Returns (written, problems).
+
+    All 20 cars come from a single track level: they share one mesh and one
+    tile set, differing only in palette.
+    """
+    log = logs.get("cars")
+    level = levels.get(source_level)
+    if level is None:
+        log.error("car source level %s was not parsed", source_level)
+        return 0, 1
+
+    lev_dir = gamedata_dir / source_level
+    try:
+        textures = LevelTextures.from_dir(lev_dir, names=level.tex_names)
+    except (FileNotFoundError, FormatError) as exc:
+        log.error("%s: cannot load textures for car export: %s",
+                  source_level, exc)
+        return 0, 1
+
+    dest = out_dir / "cars"
+    written = 0
+    problems = 0
+
+    for car in level.tex_names.car_numbers():
+        try:
+            livery = build_livery(level.tex_names, car)
+            objects = build_car(level, textures, livery, scale=scale,
+                                body_section=section)
+            write_glb(objects, dest / f"car_{car}.glb")
+        except (FormatError, KeyError) as exc:
+            log.error("car %s: export failed: %s", car, exc)
+            problems += 1
+            continue
+
+        log.info("car %s: %d nodes, %d vertices, %d triangles",
+                 car, len(objects), sum(o.vertex_count for o in objects),
+                 sum(o.triangle_count for o in objects))
+        written += 1
+
+    return written, problems
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -205,6 +255,11 @@ def main(argv: list[str] | None = None) -> int:
                              "unnamed road, prop and scenery textures")
     parser.add_argument("--no-textures", action="store_true",
                         help="skip texture extraction")
+    parser.add_argument("--no-cars", action="store_true",
+                        help="skip car model export")
+    parser.add_argument("--scale", type=float, default=DEFAULT_SCALE,
+                        help=f"model units per output unit "
+                             f"(default {DEFAULT_SCALE:g}, i.e. 1/256)")
     args = parser.parse_args(argv)
 
     try:
@@ -240,6 +295,13 @@ def main(argv: list[str] | None = None) -> int:
             gamedata_dir, levels, output_dir, log_dir, args.named_only)
         problems += tex_problems
         print(f"textures  {images} PNGs -> {output_dir / 'textures'}")
+
+    if not args.no_cars and levels:
+        cars, car_problems = extract_cars(
+            gamedata_dir, levels, output_dir, CAR_SOURCE_LEVEL, CAR_SECTION,
+            args.scale)
+        problems += car_problems
+        print(f"cars      {cars} GLBs -> {output_dir / 'cars'}")
 
     if problems:
         print(f"WARNING   {problems} validation problem(s) — see {log_dir}")

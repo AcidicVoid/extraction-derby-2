@@ -180,6 +180,30 @@ class VRAM:
         out[:, 1::2] = high
         return out
 
+    def indices_at_pixels(self, px: int, py: int, width_px: int, height: int,
+                          bpp: int) -> np.ndarray:
+        """
+        Like indices(), but the X origin is given in *pixels* of this bit
+        depth rather than halfwords.
+
+        Convenient when working from UV coordinates, which are pixel-based.
+        `px` must land on a halfword boundary, since VRAM cannot be addressed
+        more finely than that.
+        """
+        per_hw = pixels_per_halfword(bpp)
+        if px % per_hw:
+            raise FormatError(
+                f"pixel X {px} is not on a halfword boundary at {bpp}bpp "
+                f"({per_hw} pixels per halfword)")
+        return self.indices(px // per_hw, py, width_px, height, bpp)
+
+    def region_image(self, px: int, py: int, width_px: int, height: int,
+                     bpp: int, clut_x: int, clut_y: int) -> Image.Image:
+        """Decode an arbitrary pixel-addressed region against a palette."""
+        idx = self.indices_at_pixels(px, py, width_px, height, bpp)
+        palette = bgr555_array_to_rgba(self.clut(clut_x, clut_y, bpp))
+        return Image.fromarray(palette[idx], mode="RGBA")
+
     def tile_image(self, x: int, y: int, width_px: int, height: int, bpp: int,
                    clut_x: int, clut_y: int) -> Image.Image:
         """Decode a tile plus its palette into an RGBA image."""
@@ -200,15 +224,6 @@ class VRAM:
         idx = self.indices(x, y, width_px, height, bpp)
         scale = 17 if bpp == 4 else 1     # 4bpp: 0-15 -> 0-255
         return Image.fromarray((idx * scale).astype(np.uint8), mode="L")
-
-    def raw_image(self) -> Image.Image:
-        """
-        The whole framebuffer rendered as if it were 16-bit colour.
-
-        Meaningless as a picture, but invaluable for spotting gaps: unwritten
-        regions and misplaced uploads are obvious at a glance.
-        """
-        return Image.fromarray(bgr555_array_to_rgba(self.data), mode="RGBA")
 
     # -- diagnostics --------------------------------------------------------
 

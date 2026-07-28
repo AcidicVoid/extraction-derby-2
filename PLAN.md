@@ -159,6 +159,53 @@ index 0 and `WINFRN88` holds `0xF360` (cyan) — both look like chroma keys and 
 The 8bpp body tiles referencing those palettes never use index 0, so the slot is dead.
 Keying on green would have punched holes in every car.
 
+**N. The car is LEV1 section 17 for the body and section 18 for the wheel.**
+Section 17 is complete except wheels. Section 18 is one wheel: two textured hubcap
+faces at x = ±33 plus eight quads forming an octagonal tread. Sections 5 and 6 are
+simplified black single-sided alternatives; `FUN_8002b874` binds *those* to the four
+wheel slots (`ptr[5], ptr[6], ptr[5], ptr[6]`), but they have no hubcap texture, so
+section 18 is what we export.
+
+**O. Wheel placement is not stored** — the game derives it from live suspension state
+(`DAT_80091028 + car*0x288 + wheel*0x84`). Positions are therefore derived from the
+arch openings (FRWN88A x 134..184 z 174..439; BKWN88A x 141..186 z −442..−118),
+giving front (±159, 306) and rear (±163, −280). Height is the one free parameter.
+Each wheel is a separate named node so it stays adjustable.
+
+**P. Section 18 ships coincident duplicate faces.** Polygons 0/1 duplicate 10/11 with
+identical vertices and UVs but colour (0,0,0) instead of neutral (128,128,128). The
+game picks one at draw time; exported together they z-fight and the black pair wins,
+turning every wheel into a black disc. `_deduplicate` keeps the brighter of any two
+polygons sharing a vertex set and UV index.
+
+**Q. The part→CLUT-letter mapping was derived, and two prior assumptions were wrong.**
+Six 4bpp tiles share four per-car palettes, so the grouping matters. Test: palette
+entries that are car-*independent* (glass, driver, chrome) must be byte-identical to
+car 88's own tile palette, since car 88 is one of the 20. Agreement counts out of 16,
+across all 19 other cars:
+
+| tile | B | C | D | E |
+|---|---|---|---|---|
+| BON88A / ROOF88A / BOOT88A | **4** | 0 | 1 | 0 |
+| WINFRN88 | 1 | 0 | **13** | 0 |
+| WINBCK88 | 0 | **13** | 0 | 0 |
+| WINSID88 | 0 | 0 | 0 | **8** |
+
+So `A` = 8bpp body, `B` = bonnet + roof + **boot**, `C` = **rear window**,
+`D` = windscreen, `E` = side glass. Off-diagonal agreement is 0 or 1 throughout.
+This corrects the prior session's notes, which had boot on C and both windows on D.
+
+**R. Two bugs worth remembering, both of which produced plausible-looking output.**
+- The car-asset regex required a variant suffix (`<PART><nn><VARIANT>`), but the three
+  window tiles are `<PART><nn>` — `WINSID88`, `WINFRN88`, `WINBCK88` have no damage
+  states. They failed to match, were treated as non-car assets, and kept car 88's
+  light-blue palette: **every** livery came out with cyan window frames, because the
+  frame colour is index 1, covering 1019 of WINSID88's 2304 pixels.
+- Materials were written `alphaMode=OPAQUE`, discarding the PSX transparency key.
+  The hubcap is a square quad whose corners are palette entry `0x0000`; opaque, it
+  rendered as a black square instead of a disc. Now `MASK` with cutoff 0.5 wherever
+  a texture contains fully transparent texels — which is only the wheel.
+
 **M. Palette sourcing has three tiers, and one guess had to be thrown out.**
 - The name-table record is the more authoritative CLUT source: in LEV0, 42 tiles carry
   no CLUT in their TX descriptor but do in the name table. In all other 13 levels the
@@ -300,10 +347,11 @@ Reports now list per-model bounds, polygon type usage, referenced CLUTs and the
 named tiles each model samples. Remaining: emit untextured GLB to confirm winding
 and scale visually.
 
-**M3 — Cars (primary deliverable #1)**
-Identify the car block (U3), build per-body-part atlas, apply `CLUTnnA–E` per car,
-attach the correct `DRnnA` side number panel, undamaged state only, wheels as a
-separate named node. Deliverable: **20 textured GLBs in `output/cars/`.**
+**M3 — Cars (primary deliverable #1)** — ✅ **done**
+`dd2/glb.py` (glTF writer, textures embedded), `dd2/carmodel.py` (livery logic),
+`tools/render_glb.py` (software renderer for verification).
+Deliverable: **20 textured GLBs in `output/cars/`**, each 5 nodes
+(body + 4 wheels), ~465 vertices / 294 triangles. See §1.3 N–R.
 
 **M4 — Terrain format**
 Crack U1 via Ghidra + ptr[2] correlation. Deliverable: a documented chunk spec in

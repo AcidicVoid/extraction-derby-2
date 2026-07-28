@@ -71,10 +71,12 @@ NO_VRAM_Y = 0xFFFF
 #   BODY_TILE_PREFIXES   real pixel data. Every one of these exists for car
 #                        88 ONLY — that is the shared body tile set the whole
 #                        grid is drawn from.
-#                          BUMP  front/rear bumper     BKWN  back wing
-#                          FRNT  front panel           FRWN  front wing
-#                          BON   bonnet                ROOF  roof
-#                          BOOT  boot                  DEBR  debris
+#                          BUMP    front/rear bumper   BKWN    back wing
+#                          FRNT    front panel         FRWN    front wing
+#                          BON     bonnet              ROOF    roof
+#                          BOOT    boot                DEBR    debris
+#                          WINFRN  windscreen          WINBCK  rear window
+#                          WINSID  side glass
 #
 #   PALETTE_PREFIXES     CLUT-only records that recolour the shared tiles.
 #                          CLUT  19 cars (every car except 88, which uses the
@@ -88,7 +90,8 @@ NO_VRAM_Y = 0xFFFF
 #                        DR02 belonging to the player alternate livery.
 #
 BODY_TILE_PREFIXES = frozenset(
-    {"BUMP", "BKWN", "FRNT", "FRWN", "BON", "ROOF", "BOOT", "DEBR"})
+    {"BUMP", "BKWN", "FRNT", "FRWN", "BON", "ROOF", "BOOT", "DEBR",
+     "WINFRN", "WINBCK", "WINSID"})
 PALETTE_PREFIXES = frozenset({"CLUT", "SMCL", "CLT"})
 NUMBER_PANEL_PREFIX = "DR"
 
@@ -111,7 +114,16 @@ CANONICAL_CAR_NUMBERS = (
 # Car whose pixel data is the shared body tile set.
 BASE_CAR_NUMBER = "88"
 
-_CAR_ASSET = re.compile(r"^(?P<part>[A-Z]+?)(?P<car>\d{2})(?P<variant>[A-Z]\d?)$")
+# The variant suffix is OPTIONAL. Most car assets are <PART><nn><VARIANT>
+# (BUMP88A, DR40B), but the three window tiles are just <PART><nn> —
+# WINSID88, WINFRN88, WINBCK88 have no damage states. Requiring a suffix made
+# those three fail to match, so they were treated as non-car assets and kept
+# car 88's light blue palette on every livery: every car came out with cyan
+# window frames, because index 1 (the frame colour) covers 1019 of WINSID88's
+# 2304 pixels. Matching is still gated on CAR_ASSET_PREFIXES, so relaxing the
+# suffix does not admit lookalikes such as TRACK01.
+_CAR_ASSET = re.compile(
+    r"^(?P<part>[A-Z]+?)(?P<car>\d{2})(?P<variant>[A-Z]\d?)?$")
 
 
 @dataclass(frozen=True)
