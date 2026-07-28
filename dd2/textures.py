@@ -22,6 +22,7 @@ Two ways to get an image out:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
@@ -84,6 +85,40 @@ class LevelTextures:
         return self.vram.tile_image(tile.vram_x, tile.vram_y, tile.width,
                                     tile.height, tile.bpp, clut_x, clut_y)
 
+    def resolve_clut(self, tile: Tile, rec: TexName | None
+                     ) -> tuple[tuple[int, int] | None, str | None]:
+        """
+        Decide which palette to decode `tile` with.
+
+        Returns ((clut_x, clut_y), borrowed_from_name). `borrowed_from_name` is
+        None when the palette belongs to the tile or its own name record, and
+        the source record's name when it was inherited from a sibling.
+        Returns (None, None) when the palette cannot be determined.
+
+        Resolution order, in decreasing authority:
+
+        1. The name-table record's own CLUT. Preferred because the name table
+           is the more complete of the two sources: in LEV0, 42 tiles have no
+           CLUT in their TX descriptor but do have one here. Everywhere else
+           the two agree exactly, so preferring one costs nothing.
+        2. The TX descriptor's CLUT.
+        3. A sibling record's CLUT via the damage-variant rule
+           (DR40B -> DR40A). See TextureNameTable.clut_source.
+        4. Give up.
+        """
+        if rec is not None and rec.has_clut:
+            return (rec.clut_x, rec.clut_y), None
+
+        if tile.has_clut:
+            return (tile.clut_x, tile.clut_y), None
+
+        if rec is not None and self.names is not None:
+            source = self.names.clut_source(rec)
+            if source is not None and source.name != rec.name:
+                return (source.clut_x, source.clut_y), source.name
+
+        return None, None
+
     def named_tile(self, name: str) -> Image.Image:
         """Decode a tile by its name-table entry."""
         if self.names is None:
@@ -142,6 +177,32 @@ class LevelTextures:
 
         return problems
 
+    def advisories(self) -> list[str]:
+        """
+        Inconsistencies in the source data that we handle deliberately.
+
+        Kept apart from validate() so a known, benign quirk in the retail files
+        does not mask a real parsing failure. Currently one case exists across
+        all 14 levels: LEV0's MEMLOAD is assigned CLUT (320,490) by its TX
+        descriptor and (320,488) by the name table. We follow the name table
+        per resolve_clut()'s ordering.
+        """
+        notes: list[str] = []
+        if self.names is None:
+            return notes
+
+        by_pos = {(r.vram_x, r.vram_y): r for r in self.names.resident()}
+        for tile in self.tiles:
+            rec = by_pos.get((tile.vram_x, tile.vram_y))
+            if rec is None or not tile.has_clut or not rec.has_clut:
+                continue
+            if (tile.clut_x, tile.clut_y) != (rec.clut_x, rec.clut_y):
+                notes.append(
+                    f"CLUT disagreement for {rec.name}: TX descriptor says "
+                    f"({tile.clut_x},{tile.clut_y}), name table says "
+                    f"({rec.clut_x},{rec.clut_y}) — using the name table")
+        return notes
+
     def summary(self) -> dict:
         written, total = self.vram.coverage()
         return {
@@ -164,55 +225,91 @@ def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
 
 
-def export_named_tiles(textures: LevelTextures, dest: Path) -> tuple[int, int]:
+@dataclass
+class ExportStats:
+    """Outcome of a texture export pass."""
+
+    named: int = 0          # named tile, own palette
+    inherited: int = 0      # named tile, palette borrowed from a sibling
+    unnamed: int = 0        # tile with no name-table entry (track surface, props)
+    unpaletted: int = 0     # palette unknown; written as a greyscale index map
+
+    @property
+    def total(self) -> int:
+        return self.named + self.inherited + self.unnamed + self.unpaletted
+
+    def __str__(self) -> str:
+        return (f"{self.total} tiles: {self.named} named, "
+                f"{self.inherited} named+inherited palette, "
+                f"{self.unnamed} unnamed, "
+                f"{self.unpaletted} unpaletted (index maps)")
+
+
+def export_tiles(textures: LevelTextures, dest: Path,
+                 named_only: bool = False) -> ExportStats:
     """
-    Write every named, resident, decodable tile as an RGBA PNG.
+    Write every tile in the level as a PNG, sorted into subdirectories.
 
-    Returns (written, skipped). Skipped records are resident but name no
-    palette of their own; they need pairing with a CLUT record first.
+        named/        tiles the name table names, in full colour
+        unnamed/      everything else — road surface, props, scenery
+        unpaletted/   greyscale index maps for tiles whose palette is unknown
 
-    Filenames carry the VRAM position and depth so a PNG can be traced back
-    to the byte it came from without consulting the report.
+    Every tile in the archive is accounted for in exactly one directory, so
+    nothing is silently dropped. `named_only` restricts output to named/ for
+    when the unnamed bulk is just noise.
+
+    Filenames carry the VRAM position and depth so a PNG can always be traced
+    back to the bytes it came from.
     """
-    if textures.names is None:
-        return 0, 0
-    dest.mkdir(parents=True, exist_ok=True)
-    written = skipped = 0
-    for rec in textures.names.resident():
-        if not rec.has_clut:
-            skipped += 1
-            continue
-        img = textures.record_image(rec)
-        img.save(dest / f"{_safe(rec.name)}_{rec.width}x{rec.height}"
-                        f"_{rec.bpp}bpp_{rec.vram_x}-{rec.vram_y}.png")
-        written += 1
-    return written, skipped
+    stats = ExportStats()
 
-
-def export_all_tiles(textures: LevelTextures, dest: Path) -> tuple[int, int]:
-    """
-    Write every TX tile as an RGBA PNG, named or not.
-
-    Returns (written, skipped). Tiles with no CLUT of their own are skipped —
-    without a palette there is nothing meaningful to write.
-    """
-    dest.mkdir(parents=True, exist_ok=True)
-    # Map VRAM position back to a name where we have one, so the unnamed
-    # majority is easy to tell apart from the named minority.
-    by_pos = {}
+    # Name-table records keyed by VRAM position, so a TX tile can be matched
+    # to its name. Position is the join key both formats agree on.
+    by_pos: dict[tuple[int, int], TexName] = {}
     if textures.names is not None:
-        by_pos = {(r.vram_x, r.vram_y): r.name
+        by_pos = {(r.vram_x, r.vram_y): r
                   for r in textures.names.resident()}
 
-    written = skipped = 0
+    named_dir = dest / "named"
+    unnamed_dir = dest / "unnamed"
+    unpal_dir = dest / "unpaletted"
+
     for tile in textures.tiles:
-        if not tile.has_clut:
-            skipped += 1
+        rec = by_pos.get((tile.vram_x, tile.vram_y))
+        geometry = (f"{tile.width}x{tile.height}_{tile.bpp}bpp"
+                    f"_{tile.vram_x}-{tile.vram_y}")
+        clut, borrowed_from = textures.resolve_clut(tile, rec)
+
+        # Palette could not be determined. Preserve the pixels as an index map
+        # rather than inventing colour or dropping the tile.
+        if clut is None:
+            if not named_only:
+                unpal_dir.mkdir(parents=True, exist_ok=True)
+                label = _safe(rec.name) if rec is not None \
+                    else f"tile{tile.index:04d}"
+                textures.vram.index_image(
+                    tile.vram_x, tile.vram_y, tile.width, tile.height,
+                    tile.bpp).save(
+                    unpal_dir / f"{label}_{geometry}_indices.png")
+                stats.unpaletted += 1
             continue
-        label = by_pos.get((tile.vram_x, tile.vram_y), "unnamed")
-        img = textures.tile_image(tile)
-        img.save(dest / f"tile{tile.index:04d}_{_safe(label)}"
-                        f"_{tile.width}x{tile.height}_{tile.bpp}bpp"
-                        f"_{tile.vram_x}-{tile.vram_y}.png")
-        written += 1
-    return written, skipped
+
+        img = textures.tile_image_with_clut(tile, *clut)
+
+        if rec is None:
+            if not named_only:
+                unnamed_dir.mkdir(parents=True, exist_ok=True)
+                img.save(unnamed_dir / f"tile{tile.index:04d}_{geometry}.png")
+                stats.unnamed += 1
+            continue
+
+        named_dir.mkdir(parents=True, exist_ok=True)
+        if borrowed_from is not None:
+            img.save(named_dir / f"{_safe(rec.name)}_{geometry}"
+                                 f"_clut-{_safe(borrowed_from)}.png")
+            stats.inherited += 1
+        else:
+            img.save(named_dir / f"{_safe(rec.name)}_{geometry}.png")
+            stats.named += 1
+
+    return stats

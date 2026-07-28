@@ -187,6 +187,20 @@ class VRAM:
         palette = bgr555_array_to_rgba(self.clut(clut_x, clut_y, bpp))
         return Image.fromarray(palette[idx], mode="RGBA")
 
+    def index_image(self, x: int, y: int, width_px: int, height: int,
+                    bpp: int) -> Image.Image:
+        """
+        A tile's palette indices as a greyscale image, no palette applied.
+
+        For tiles whose palette we cannot determine. Indices are stretched to
+        the full 0-255 range so the artwork is actually legible; the result is
+        a shape reference, not real colour, and is written to a separate
+        directory so it can never be mistaken for one.
+        """
+        idx = self.indices(x, y, width_px, height, bpp)
+        scale = 17 if bpp == 4 else 1     # 4bpp: 0-15 -> 0-255
+        return Image.fromarray((idx * scale).astype(np.uint8), mode="L")
+
     def raw_image(self) -> Image.Image:
         """
         The whole framebuffer rendered as if it were 16-bit colour.

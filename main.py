@@ -27,7 +27,7 @@ from dd2 import logs, report, workspace
 from dd2.binio import FormatError
 from dd2.dirinfo import DirInfo
 from dd2.level import LevelFile
-from dd2.textures import LevelTextures, export_all_tiles, export_named_tiles
+from dd2.textures import LevelTextures, export_tiles
 
 
 def human(n: float) -> str:
@@ -130,7 +130,7 @@ def parse_levels(gamedata_dir: Path, log_dir: Path) -> tuple[int, int]:
 
 def extract_textures(gamedata_dir: Path, levels: dict[str, LevelFile],
                      out_dir: Path, log_dir: Path,
-                     all_tiles: bool) -> tuple[int, int]:
+                     named_only: bool) -> tuple[int, int]:
     """
     Build each level's VRAM and export tiles as PNG.
     Returns (images written, validation problems).
@@ -152,10 +152,15 @@ def extract_textures(gamedata_dir: Path, levels: dict[str, LevelFile],
         problems = textures.validate()
         if problems:
             problem_total += len(problems)
-            log.warning("%s: %d texture validation problem(s)",
-                        key, len(problems))
+            log.error("%s: %d texture validation problem(s)",
+                      key, len(problems))
             for p in problems:
-                log.warning("%s: %s", key, p)
+                log.error("%s: %s", key, p)
+
+        # Known, deliberately handled source-data quirks. Logged for the record
+        # but not counted as failures.
+        for note in textures.advisories():
+            log.info("%s: advisory: %s", key, note)
 
         info = textures.summary()
         summaries[key] = info
@@ -164,15 +169,17 @@ def extract_textures(gamedata_dir: Path, levels: dict[str, LevelFile],
                  info["vram_halfwords_written"], info["vram_halfwords_total"])
 
         dest = out_dir / "textures" / key
-        if all_tiles:
-            n, skipped = export_all_tiles(textures, dest)
-            log.info("%s: exported %d tile PNGs (%d skipped, no CLUT)",
-                     key, n, skipped)
-        else:
-            n, skipped = export_named_tiles(textures, dest)
-            log.info("%s: exported %d named tile PNGs (%d skipped, no CLUT)",
-                     key, n, skipped)
-        written_total += n
+        stats = export_tiles(textures, dest, named_only=named_only)
+        log.info("%s: exported %s", key, stats)
+        info["export"] = {
+            "named": stats.named, "inherited": stats.inherited,
+            "unnamed": stats.unnamed, "unpaletted": stats.unpaletted,
+        }
+        if stats.total != len(textures.tiles) and not named_only:
+            log.error("%s: exported %d tiles but the archive holds %d",
+                      key, stats.total, len(textures.tiles))
+            problem_total += 1
+        written_total += stats.total
 
         # A full-VRAM dump makes gaps and stray uploads obvious at a glance.
         textures.vram.raw_image().save(dest / "_vram.png")
@@ -193,9 +200,9 @@ def main(argv: list[str] | None = None) -> int:
                              "(default: ./output)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="mirror the log to the console")
-    parser.add_argument("--all-tiles", action="store_true",
-                        help="export every texture tile, not just the named "
-                             "ones (includes unnamed track surface texture)")
+    parser.add_argument("--named-only", action="store_true",
+                        help="export only tiles the name table names; skip the "
+                             "unnamed road, prop and scenery textures")
     parser.add_argument("--no-textures", action="store_true",
                         help="skip texture extraction")
     args = parser.parse_args(argv)
@@ -230,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_textures and levels:
         images, tex_problems = extract_textures(
-            gamedata_dir, levels, output_dir, log_dir, args.all_tiles)
+            gamedata_dir, levels, output_dir, log_dir, args.named_only)
         problems += tex_problems
         print(f"textures  {images} PNGs -> {output_dir / 'textures'}")
 

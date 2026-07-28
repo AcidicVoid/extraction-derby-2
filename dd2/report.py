@@ -244,24 +244,43 @@ def write_texture_index(summaries: dict[str, dict], dest: Path) -> None:
     """Overview of each level's assembled VRAM."""
     lines = [RULE, "Texture / VRAM overview", RULE, "",
              f"{'level':<6} {'tiles':>6} {'noclut':>7} {'txc':>5} "
-             f"{'txcslack':>9} {'vram written':>13} {'coverage':>9} "
-             f"{'named':>6}"]
+             f"{'txcslack':>9} {'vram written':>13} {'coverage':>9}"]
     for key in sorted(summaries):
         s = summaries[key]
         pct = 100.0 * s["vram_halfwords_written"] / s["vram_halfwords_total"]
         lines.append(
             f"{key:<6} {s['tiles']:>6} {s['tiles_without_clut']:>7} "
             f"{s['txc_uploads']:>5} {s['txc_slack']:>9} "
-            f"{s['vram_halfwords_written']:>13} {pct:>8.1f}% "
-            f"{s['named_records']:>6}"
+            f"{s['vram_halfwords_written']:>13} {pct:>8.1f}%"
         )
+
+    if any("export" in s for s in summaries.values()):
+        lines += ["", THIN, "Exported PNGs per level", THIN,
+                  f"{'level':<6} {'named':>7} {'inherited':>10} "
+                  f"{'unnamed':>8} {'unpaletted':>11} {'total':>7}"]
+        for key in sorted(summaries):
+            e = summaries[key].get("export")
+            if e is None:
+                continue
+            total = sum(e.values())
+            lines.append(
+                f"{key:<6} {e['named']:>7} {e['inherited']:>10} "
+                f"{e['unnamed']:>8} {e['unpaletted']:>11} {total:>7}"
+            )
+
     lines += ["", THIN,
-              "noclut   = tiles whose descriptor sets clut_y to 0xFFFE; their",
-              "           palette is supplied by another upload.",
-              "txcslack = unreferenced trailing bytes in LEVEL.TXC. Three",
-              "           retail levels ship filler palettes here.",
-              "coverage = fraction of the 1024x512 halfword framebuffer that",
-              "           received an upload."]
+              "noclut     = tiles whose descriptor sets clut_y to 0xFFFE; the",
+              "             palette comes from elsewhere.",
+              "txcslack   = unreferenced trailing bytes in LEVEL.TXC. Three",
+              "             retail levels ship filler palettes here.",
+              "coverage   = fraction of the 1024x512 halfword framebuffer that",
+              "             received an upload.",
+              "named      = tile has a name-table entry and its own palette.",
+              "inherited  = named tile whose palette was borrowed from a name",
+              "             sibling (e.g. DR40B takes DR40A's CLUT).",
+              "unnamed    = no name-table entry: road surface, props, scenery.",
+              "unpaletted = palette could not be determined; written to",
+              "             unpaletted/ as a greyscale index map, not colour."]
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

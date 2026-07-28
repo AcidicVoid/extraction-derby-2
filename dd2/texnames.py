@@ -301,6 +301,46 @@ class TextureNameTable:
         """CLT* records: the player's alternate colour schemes."""
         return [r for r in self.records if r.part == "CLT"]
 
+    # -- palette inheritance ------------------------------------------------
+
+    def clut_source(self, rec: TexName) -> TexName | None:
+        """
+        Find the record that supplies `rec`'s palette.
+
+        Returns `rec` itself when it has its own CLUT.
+
+        Otherwise we apply exactly one rule, the damage-variant rule: a name
+        ending in a letter other than "A" is a later damage state of the "A"
+        variant of the same part, so `DR40B` and `DR40C` take `DR40A`'s
+        palette. The candidate must be a recognised car asset, must share
+        `rec`'s part and car number, and must have the same bit depth.
+
+        Deliberately narrow. An earlier, looser version matched on any name
+        sharing a prefix, and promptly paired LEV0's `CARD` menu sprite with an
+        unrelated `CAR*` entry — a plausible-looking result that was simply
+        wrong. Only the damage-variant pattern has actually been verified
+        against the data, so only that is applied.
+
+        Returns None where the palette is genuinely unknown: LEV0's menu
+        sprites (`CONFIG`/`CONFIGP`, the `I*` icons) and LEV6's `FLASH1-6`
+        and `GOOSE1-8` animation frames, whose whole families are palette-less
+        and whose CLUT is chosen by code we have not traced. Callers should
+        fall back to dumping raw indices rather than inventing colour.
+        """
+        if rec.has_clut:
+            return rec
+
+        # Must be a recognised car asset with a variant suffix to reason about.
+        part, car, variant = rec.part, rec.car_number, rec.variant
+        if part is None or car is None or not variant or variant == "A":
+            return None
+
+        candidate = self._by_name.get(f"{part}{car}A")
+        if (candidate is not None and candidate.has_clut
+                and candidate.bpp == rec.bpp):
+            return candidate
+        return None
+
     # -- validation ---------------------------------------------------------
 
     def validate(self) -> list[str]:
@@ -312,6 +352,15 @@ class TextureNameTable:
         """
         problems: list[str] = []
         occupied: dict[tuple[int, int], str] = {}
+
+        # Duplicate names make get() ambiguous and silently break palette
+        # inheritance, so surface them.
+        counts: dict[str, int] = {}
+        for rec in self.records:
+            counts[rec.name] = counts.get(rec.name, 0) + 1
+        for name, n in sorted(counts.items()):
+            if n > 1:
+                problems.append(f"name {name!r} appears {n} times")
 
         for rec in self.resident():
             right = rec.vram_x + rec.width_halfwords

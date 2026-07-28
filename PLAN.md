@@ -159,6 +159,18 @@ index 0 and `WINFRN88` holds `0xF360` (cyan) — both look like chroma keys and 
 The 8bpp body tiles referencing those palettes never use index 0, so the slot is dead.
 Keying on green would have punched holes in every car.
 
+**M. Palette sourcing has three tiers, and one guess had to be thrown out.**
+- The name-table record is the more authoritative CLUT source: in LEV0, 42 tiles carry
+  no CLUT in their TX descriptor but do in the name table. In all other 13 levels the
+  two sources agree on every tile. One genuine disagreement exists game-wide — LEV0's
+  `MEMLOAD`, TX says (320,490), name table says (320,488) — reported as an advisory.
+- `DRnnB`/`DRnnC` inherit `DRnnA`'s palette (38–40 per track level).
+- **Rejected heuristic:** a first attempt matched palette-less tiles to any name-table
+  sibling sharing a prefix. It resolved LEV0's 42 UI sprites and looked like a success,
+  but was pairing `CARD` with an unrelated `CAR*` entry. Only the damage-variant rule is
+  actually evidenced, so only that is applied; LEV6's `FLASH1-6` and `GOOSE1-8` (14
+  tiles, the sole remaining gap) are admitted as unknown and dumped as index maps.
+
 **H. The name table does not cover most of VRAM.** In LEV1 it names 194 resident
 tiles occupying 134,776 of VRAM's 524,288 halfwords. Track surface textures are
 unnamed and reachable only through UV/tpage. Consequence for M1: track texturing
@@ -264,8 +276,22 @@ Reports land in `output/logs/`.
 **M1 — VRAM + texture pipeline** — ✅ **done**
 `dd2/vram.py` (1024×512 halfword framebuffer, BGR555→RGBA), `dd2/txfiles.py`
 (TX0–TX3 tile archive + TXC palette archive), `dd2/textures.py` (assembly and PNG
-export). 1915 PNGs across 14 levels, plus a full-VRAM dump per level.
-Livery CLUT swapping verified visually across all 20 cars. See §1.3 I–K.
+export). **4862 PNGs — every tile in every level**, plus a full-VRAM dump per level.
+Livery CLUT swapping verified visually across all 20 cars. See §1.3 I–M.
+
+Output layout per level, with every archive tile landing in exactly one directory
+so nothing can be silently dropped:
+
+```
+output/textures/LEVn/
+    _vram.png       whole framebuffer, for spotting gaps at a glance
+    named/          tiles the name table names (car parts, UI)
+    unnamed/        road surface, hoardings, grandstands, crowd, sky, props
+    unpaletted/     greyscale index maps where the palette is unknown
+```
+
+Palette resolution order (`LevelTextures.resolve_clut`): name-table record →
+TX descriptor → damage-variant sibling → give up.
 
 **M2 — Model decoder** — ✅ **done** (ahead of M1)
 `dd2/model.py`: `0x2C` header, vertex/normal arrays, polygon command stream, and the
