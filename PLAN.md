@@ -224,6 +224,47 @@ This corrects the prior session's notes, which had boot on C and both windows on
   rendered as a black square instead of a disc. Now `MASK` with cutoff 0.5 wherever
   a texture contains fully transparent texels — which is only the wheel.
 
+**U. Section 0 is trackside scenery, not the road.** It holds a nested table of
+chunks; each chunk is `u32 count` (never > 32) followed by 16-byte records of
+`u32 model_offset` + `i32 x, y, z`. Every offset resolves to an ordinary `0x2C` model
+block, so terrain reuses `dd2.model` unchanged. Rendered top-down, LEV9 shows an arena
+with curved perimeter barriers and LEV1 shows grandstands and billboards — and the
+instance positions trace the circuit outline. There is no drivable surface here.
+
+**V. LZSS is real after all — but only for circuit terrain chunks.** `FUN_80050ba0`
+is a stock LZSS: `u32` decompressed size, then control bytes whose set bits mark
+literals and clear bits mark back-references of
+`offset = (b1 | ((b2 & 0xF0) << 4)) - 0x1000`, `length = (b2 & 0x0F) + 3`. The offset
+is a **negative displacement from the current write position**, not a ring-buffer
+index — which is exactly what the old project got wrong, on top of applying it to the
+whole file. Applied per chunk, all 231 circuit chunks decompress to exactly their
+declared size with no back-reference ever reaching before the start of the output.
+
+**W. Two track classes, split at level 8.** `FUN_80026098` branches on the level
+number: levels 0–7 (circuits) compress their chunks, levels 8–B (arenas) store them
+plainly, and both then use the same parser `FUN_80025454`. Entropy confirms it —
+7.3–7.6 bits/byte on LEV1–7 versus 5.8–5.9 with ~30% zeros on LEV8–B. Rather than
+hard-code the level number we discriminate on the leading word, which is a record
+count (≤ 32) when raw and a decompressed size (thousands) when compressed.
+
+**X. The type byte's bit 0x20 breaks the `& 0x1C` rule, and the GPU code is the real
+key.** Terrain uses types `0x22`, `0x25`, `0x27`, `0x29`. Under the old mask those
+decode as flat tris/quads, but every one is really a 20-byte **textured quad** — e.g.
+`0x25` is `24 2b | ffff | 808080 2c | 008a | 7c7c | 0,1,2,3`. When bit 0x20 is set the
+low five bits do not describe the primitive at all, and the +0x02 slot is not the
+0xFFFF sentinel either. The layout is now derived from the PSX GP0 command byte at
++0x07 (`0x20 | quad<<3 | textured<<2 | gouraud<<4`), with the blend-only bits 0x01
+and 0x02 masked out — `0x2E` is simply `0x2C` plus semi-transparency. That also
+explains `0x2E` appearing where a hard-coded table expected `0x2C`.
+
+**Y. The road surface is section 2.** Plotted top-down it is unmistakably the circuit:
+a closed ribbon with a hairpin, ~2105 points for LEV1. Arenas differ — LEV9 has
+exactly 1024 points, a 32×32 grid. Connectivity is *not* recoverable from the
+coordinates (X-run lengths are overwhelmingly 1), so the quads must be defined by
+section 1: a 192-entry linked list walked by `FUN_80025cc8`, with a next-offset at
++0x1C and two chunk indices at +0x24/+0x26 used for streaming (at most 14 chunks
+resident at once).
+
 **S. The player's car has three class variants, and they need *two* palette sets.**
 Car 01 carries `CLUT01A–E` plus `CLT01A2–E2` and `CLT01A3–E3`, exported as
 `car_01_rookie`, `car_01_amateur`, `car_01_pro`. Evidence that these are variants of
@@ -310,7 +351,8 @@ Observed types in LEV1: `0x00, 0x01, 0x04, 0x05, 0x08, 0x09, 0x0c, 0x0d, 0x19, 0
 
 | # | Unknown | Risk | Approach |
 |---|---|---|---|
-| U1 | ptr[0] terrain chunk format | **High** — blocks all track output | Ghidra: find the consumer of `DAT_80079a50[0]`; cross-check against ptr[2] point grid, which is almost certainly the shared vertex pool the chunks index into |
+| ~~U1~~ | ~~ptr[0] terrain chunk format~~ | — | **Resolved** — scenery instances; see §1.3 U–X |
+| U8 | Road-surface connectivity: how section 1 groups section 2's points into quads | **High** — blocks the drivable surface | Section 1 is a 192-entry linked list (next at +0x1C, chunk indices at +0x24/+0x26). Find what indexes into section 2, and where the road's UVs come from |
 | ~~U2~~ | ~~Polygon types `0x09 / 0x19 / 0x1d`~~ | — | **Resolved** — one layout rule covers all 24 observed types; see §1.3 F |
 | ~~U3~~ | ~~Which LEV1 section is the car~~ | — | **Resolved** — sections 16 and 17; see §1.3 G |
 | U4 | Prop world placement (ptr[1] / ptr[2]) | Medium | Needed to place props in the track GLB; ptr[2] is confirmed to hold world-space `i32` XYZ |
@@ -405,13 +447,37 @@ Deliverable: **22 textured GLBs in `output/cars/`** — 19 opponents plus the
 player car's three class variants — each 5 nodes (body + 4 wheels),
 465 vertices / 294 triangles. See §1.3 N–T.
 
-**M4 — Terrain format**
-Crack U1 via Ghidra + ptr[2] correlation. Deliverable: a documented chunk spec in
-`docs/FORMAT.md` and a raw point cloud / wireframe dump proving the decode.
+**M4 — Terrain format** — ✅ **section 0 done; road surface identified**
+`dd2/lzss.py` and `dd2/terrain.py`. All 11 tracks decode: 6150 instances,
+128 554 vertices, 71 839 polygons, zero failures. See §1.3 U–Y.
+Remaining: road-surface connectivity (section 1 → section 2), tracked as U8.
 
-**M5 — Tracks (primary deliverable #2)**
-Merge the 28 chunks into one `terrain` mesh, texture it, and emit each prop as its own
-named object placed via U4. Deliverable: **11 textured GLBs in `output/tracks/`.**
+**M5 — Tracks (primary deliverable #2)** — 🟡 **scenery done, road outstanding**
+`dd2/trackmodel.py` merges section 0's placed models into texture-grouped primitives.
+LEV1 comes out as 122 primitives / 21 847 vertices / 11 884 triangles and renders as
+recognisable Pine Hills Raceway scenery: scrub-grass ground, crowded grandstands,
+tarmac with lane markings, barriers, the start-finish building.
+
+**Placement: only the coarse half of each position word is the translation.**
+`FUN_80025454` splits every position word into `coarse = (v & 0xFFFF8000) + 0x4000`
+(an int, the object translation) and `fine = (v & 0x7FFF) + 0xC000` (a short, into a
+separate array). The two sum back to `v`, which is exactly what makes this trap
+convincing — it looks like a GTE precision split of a single value. It is not: the
+fine half is *not* a vertex offset, so adding the raw word double-counts the low 15
+bits and drops the scene 0x4000 below the road.
+
+Measured against the road surface, for scenery within 1500 units of it:
+
+| placement | median \|dy\| | mean \|dy\| | samples near road |
+|---|---|---|---|
+| raw word + vertex | 16073 | 15410 | 2155 |
+| **coarse(word) + vertex** | **202** | **328** | **5999** |
+
+The sample count is the stronger signal: correcting this puts roughly three times as
+much scenery adjacent to the track. Visually the landscape goes from scattered
+fragments to one contiguous ground surface with the road sitting on it.
+
+Blocked on U8 for the drivable road surface, and U4 for prop placement.
 
 **M6 — Verification**
 Automated checks: manifold-ish sanity (no degenerate tris, UVs in `[0,1]`, no NaNs),

@@ -111,6 +111,7 @@ class LevelFile:
         self._tex_names: TextureNameTable | None = None
         self._uv_table: UVTable | None = None
         self._models: dict[int, ModelBlock] | None = None
+        self._terrain = None
 
     # -- construction -------------------------------------------------------
 
@@ -178,6 +179,19 @@ class LevelFile:
                 for s in self.model_sections
             }
         return self._models
+
+    @property
+    def terrain(self) -> "Terrain":
+        """
+        Section 0 decoded: the track's positioned terrain meshes.
+        Empty for non-track files, where section 0 spans zero bytes.
+        """
+        if self._terrain is None:
+            from .terrain import Terrain
+            s = self.sections[SECTION_TERRAIN]
+            self._terrain = Terrain(self.data, s.offset, s.size,
+                                    name=f"{self.name}:terrain")
+        return self._terrain
 
     def model(self, section_index: int) -> ModelBlock:
         try:

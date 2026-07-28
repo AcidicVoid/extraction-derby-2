@@ -126,18 +126,36 @@ BATCH_HEADER_SIZE = 4
 
 NO_FACE_NORMAL = 0xFFFF
 
-# Primitive base -> the GPU code the entry must carry at +0x07.
-GPU_CODE = {
-    0x00: 0x20, 0x04: 0x28, 0x08: 0x24, 0x0C: 0x2C,
-    0x10: 0x30, 0x14: 0x38, 0x18: 0x34, 0x1C: 0x3C,
-}
+# PSX GP0 polygon command encoding. The command byte the entry carries at
+# +0x07 is 0x20 plus these flags, and it is the authoritative description of the
+# primitive — more reliable than the batch type byte, as the terrain types below
+# demonstrate.
+GPU_POLYGON = 0x20
+GPU_RAW_TEXTURE = 0x01      # do not modulate the texture by the colour
+GPU_SEMI_TRANSPARENT = 0x02
+GPU_TEXTURED = 0x04
+GPU_QUAD = 0x08
+GPU_GOURAUD = 0x10
+# Bits that affect blending but not the entry's field layout.
+GPU_LAYOUT_IRRELEVANT = GPU_RAW_TEXTURE | GPU_SEMI_TRANSPARENT
 
-BASE_NAME = {
-    0x00: "flat_tri", 0x04: "flat_quad",
-    0x08: "tex_tri", 0x0C: "tex_quad",
-    0x10: "gouraud_tri", 0x14: "gouraud_quad",
-    0x18: "gouraud_tex_tri", 0x1C: "gouraud_tex_quad",
-}
+# Terrain batches set bit 0x20 in the type byte. When it is set the low five
+# bits do NOT describe the primitive: every such entry is a 20-byte textured
+# quad with no face normal, whatever the low bits say. Verified across all
+# terrain in all 11 tracks — types 0x22, 0x25, 0x27 and 0x29 all carry GPU code
+# 0x2C or 0x2E (textured quad, the 0x02 being semi-transparency) and all hold
+# 0xFFFF in the face-normal slot, even where the low bits would imply otherwise.
+TYPE_TERRAIN_QUAD = 0x20
+
+
+def _primitive_name(corners: int, textured: bool, gouraud: bool) -> str:
+    kind = "quad" if corners == 4 else "tri"
+    parts = []
+    if gouraud:
+        parts.append("gouraud")
+    parts.append("tex" if textured else "flat")
+    parts.append(kind)
+    return "_".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +180,20 @@ class PolyLayout:
     normal_offset: int | None
     entry_size: int
 
+    # Whether +0x02 holds a face normal index rather than the 0xFFFF sentinel.
+    # Not derivable from `flags` alone: terrain types put other data there.
+    has_face_normal: bool = False
+    # Whether +0x02 is required to be 0xFFFF when it is not a face normal.
+    # True for ordinary types, where 6532 car and prop polygons agree. False
+    # for terrain quads, which store something else in that slot entirely.
+    sentinel_enforced: bool = True
+    # The GPU command byte this entry must carry, ignoring blend-only bits.
+    gpu_code: int = 0
+
     @property
     def name(self) -> str:
-        return f"{BASE_NAME.get(self.base, f'base{self.base:#04x}')}" \
-               f"/{self.flags}"
+        return (f"{_primitive_name(self.corners, self.textured, self.gouraud)}"
+                f"/{self.flags:02X}")
 
 
 _LAYOUT_CACHE: dict[int, PolyLayout] = {}
@@ -182,18 +210,30 @@ def layout_for(type_id: int) -> PolyLayout:
     if cached is not None:
         return cached
 
-    base = type_id & 0x1C
-    flags = type_id & 0x03
-    if base not in GPU_CODE:
-        raise FormatError(f"unknown polygon primitive base 0x{base:02X} "
-                          f"(from type 0x{type_id:02X})")
+    if type_id & TYPE_TERRAIN_QUAD:
+        # Terrain quad: fixed layout, low bits carry something else.
+        base = 0x0C
+        flags = type_id & 0x1F
+        corners = 4
+        textured = True
+        gouraud = False
+        has_face_normal = False
+    else:
+        base = type_id & 0x1C
+        flags = type_id & 0x03
+        corners = 4 if (base & 0x04) else 3
+        textured = bool(base & 0x08)
+        gouraud = bool(base & 0x10)
+        # Flag bit 0 adds a face normal index, and on gouraud primitives also
+        # selects normal-driven shading over baked per-corner colours.
+        has_face_normal = bool(flags & 0x01)
 
-    corners = 4 if (base & 0x04) else 3
-    textured = bool(base & 0x08)
-    gouraud = bool(base & 0x10)
-    # Flag bit 0 selects normal-driven shading over baked per-corner colours.
-    per_vertex_normals = gouraud and bool(flags & 0x01)
-    colour_count = corners if (gouraud and not (flags & 0x01)) else 1
+    per_vertex_normals = gouraud and has_face_normal
+    colour_count = corners if (gouraud and not has_face_normal) else 1
+    gpu_code = (GPU_POLYGON
+                | (GPU_QUAD if corners == 4 else 0)
+                | (GPU_TEXTURED if textured else 0)
+                | (GPU_GOURAUD if gouraud else 0))
 
     cursor = 4                       # past type, attribute and face normal
     colour_offset = cursor
@@ -221,6 +261,8 @@ def layout_for(type_id: int) -> PolyLayout:
         colour_count=colour_count, colour_offset=colour_offset,
         uv_offset=uv_offset, vertex_offset=vertex_offset,
         normal_offset=normal_offset, entry_size=entry_size,
+        has_face_normal=has_face_normal, gpu_code=gpu_code,
+        sentinel_enforced=not (type_id & TYPE_TERRAIN_QUAD),
     )
     _LAYOUT_CACHE[type_id] = layout
     return layout
@@ -242,6 +284,9 @@ class Polygon:
     clut_id: int | None                # PSX CLUT descriptor
     vertices: tuple[int, ...]          # indices into the block's vertex array
     normals: tuple[int, ...]           # per-corner normal indices, may be empty
+    # Raw +0x02 when it is not a face normal. 0xFFFF for ordinary primitives;
+    # terrain quads store some other unidentified value here.
+    slot_02: int | None = None
 
     @property
     def corners(self) -> int:
@@ -311,6 +356,10 @@ class ModelBlock:
 
     # Which (type, entry_size) batches were seen, for reporting.
     batch_types: dict[int, int] = field(default_factory=dict)
+
+    # Bytes left unread after the polygon terminator, when the caller supplied
+    # only an upper bound for `size`. Zero for exactly-sized blocks.
+    trailing_bytes: int = 0
 
     @property
     def is_empty(self) -> bool:
@@ -417,25 +466,24 @@ def _parse_vec3_array(data: bytes, base: int, count: int,
 
 
 def _parse_polygon(data: bytes, offset: int, lay: PolyLayout) -> Polygon:
-    base_byte = u8(data, offset)
-    if base_byte != lay.base:
-        raise FormatError(
-            f"polygon entry at 0x{offset:X}: leading byte 0x{base_byte:02X} "
-            f"does not match batch primitive base 0x{lay.base:02X}")
-
+    # The GPU command byte is the authoritative description of the primitive,
+    # so it is what we check. The leading byte is only loosely related to the
+    # batch type and is not verified: terrain entries carry values that do not
+    # match their batch's type byte at all.
     gpu_code = u8(data, offset + 7)
-    if gpu_code != GPU_CODE[lay.base]:
+    if gpu_code & ~GPU_LAYOUT_IRRELEVANT != lay.gpu_code:
         raise FormatError(
-            f"polygon entry at 0x{offset:X}: GPU code 0x{gpu_code:02X}, "
-            f"expected 0x{GPU_CODE[lay.base]:02X} for {lay.name}")
+            f"polygon entry at 0x{offset:X}: GPU code 0x{gpu_code:02X} "
+            f"describes a different primitive than 0x{lay.gpu_code:02X} "
+            f"({lay.name}) implied by batch type 0x{lay.type_id:02X}")
 
     attribute = u8(data, offset + 1)
 
     raw_face_normal = u16(data, offset + 2)
-    if lay.flags & 0x01:
+    if lay.has_face_normal:
         face_normal: int | None = raw_face_normal
     else:
-        if raw_face_normal != NO_FACE_NORMAL:
+        if lay.sentinel_enforced and raw_face_normal != NO_FACE_NORMAL:
             raise FormatError(
                 f"polygon entry at 0x{offset:X}: type 0x{lay.type_id:02X} "
                 f"carries no face normal, but the slot holds "
@@ -464,16 +512,25 @@ def _parse_polygon(data: bytes, offset: int, lay: PolyLayout) -> Polygon:
 
     return Polygon(layout=lay, attribute=attribute, face_normal=face_normal,
                    colours=colours, uv_index=uv_index, clut_id=clut_id,
-                   vertices=vertices, normals=normals)
+                   vertices=vertices, normals=normals,
+                   slot_02=raw_face_normal if face_normal is None else None)
 
 
 def parse_model_block(data: bytes, offset: int, size: int,
-                      name: str = "model") -> ModelBlock:
+                      name: str = "model",
+                      allow_trailing: bool = False) -> ModelBlock:
     """
     Parse one model block out of `data` at `offset`.
 
     Raises FormatError on anything that contradicts the documented layout;
     a silent partial parse would be far more expensive than a crash here.
+
+    `size` is normally the block's exact length, and the polygon stream is
+    required to end precisely there — a strong check that everything before it
+    was read correctly. Set `allow_trailing` when the caller only knows an
+    upper bound, as with the last model in a terrain chunk, which is followed
+    by a few bytes of padding. The unread remainder is recorded in
+    `ModelBlock.trailing_bytes` instead of raising.
     """
     if size < HEADER_SIZE:
         raise FormatError(
@@ -550,8 +607,10 @@ def parse_model_block(data: bytes, offset: int, size: int,
         cursor += count * entry_size
 
     if cursor != size:
-        raise FormatError(
-            f"{name}: polygon stream ended at 0x{cursor:X} but the block "
-            f"ends at 0x{size:X} (delta {size - cursor})")
+        if not allow_trailing:
+            raise FormatError(
+                f"{name}: polygon stream ended at 0x{cursor:X} but the block "
+                f"ends at 0x{size:X} (delta {size - cursor})")
+        model.trailing_bytes = size - cursor
 
     return model
