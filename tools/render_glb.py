@@ -51,14 +51,47 @@ def read_image(gltf: GLTF2, blob: bytes, texture_index: int) -> Image.Image:
     return Image.open(io.BytesIO(raw)).convert("RGBA")
 
 
+def _node_matrix(node) -> np.ndarray:
+    """Local TRS of a node as a 4x4 matrix."""
+    m = np.eye(4)
+    if node.rotation:
+        x, y, z, w = node.rotation
+        m[:3, :3] = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ])
+    if node.scale:
+        m[:3, :3] = m[:3, :3] @ np.diag(node.scale)
+    if node.translation:
+        m[:3, 3] = node.translation
+    return m
+
+
 def load_primitives(path: Path) -> list[dict]:
+    """
+    Read every primitive, with each node's transform baked into its positions.
+
+    Node transforms matter: the animated props are stored at the origin and
+    positioned entirely by their node's translation and rotation, so ignoring
+    it draws them in the wrong place.
+    """
     gltf = GLTF2().load_binary(str(path))
     blob = gltf.binary_blob()
     out = []
-    for mesh in gltf.meshes:
+    mesh_transform: dict[int, np.ndarray] = {}
+    for node in gltf.nodes:
+        if node.mesh is not None:
+            mesh_transform[node.mesh] = _node_matrix(node)
+
+    for mesh_index, mesh in enumerate(gltf.meshes):
+        xform = mesh_transform.get(mesh_index, np.eye(4))
         for prim in mesh.primitives:
+            pos = read_accessor(gltf, blob, prim.attributes.POSITION)
+            pos = (xform @ np.hstack(
+                [pos, np.ones((len(pos), 1))]).T).T[:, :3]
             entry = {
-                "pos": read_accessor(gltf, blob, prim.attributes.POSITION),
+                "pos": pos.astype(np.float32),
                 "idx": read_accessor(gltf, blob, prim.indices).astype(np.int64),
                 "uv": None, "col": None, "tex": None,
             }

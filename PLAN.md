@@ -366,6 +366,7 @@ Observed types in LEV1: `0x00, 0x01, 0x04, 0x05, 0x08, 0x09, 0x0c, 0x0d, 0x19, 0
 | U5 | Wheel model | Low | **Not** among LEV1's 18 model blocks. No `WHEEL`/`TYRE` tile is referenced by any track model. Check LEV0 section 11, or the wheel may be a sprite |
 | U6 | ptr[2] exact stride (25260 B ÷ 12 = 2105, not a clean grid) | Low | Check for a leading header word |
 | U7 | Model header fields `unknown_00/_06/_08/_18/_1a/_1c`, and the polygon attribute byte at +0x01 | Low | Dumped per model in the reports; look for a pattern as more models are understood |
+| U9 | Animation for the track props (LEV1's head, LEV4's carts) | Medium | **Partly traced, not solved.** `FUN_8001d998` creates 12 objects — index 0 from ptr[21], 1–11 from ptr[22] — with position, velocity and an angle field. `FUN_8001e278` case 4 updates them by interpolating between waypoints read from `DAT_8006ec88` and deriving facing with an atan2 (`FUN_800528fc`), so the motion is **procedural, not keyframed**: any GLB animation would have to be produced by sampling that path. The table is in the executable at file offset **0x5F488** (`SCUS_943.50`, text base 0x80010000), 16-byte `(x, y, z, 0)` entries. **Caution:** reading it yields only ~25 waypoints spanning x −64368..−25476, y −6382..3883, z −29343..19967, which does *not* sit convincingly inside LEV1's track (road y is −2276..1496, z −21345..31180) and is not a closed loop. So either it is not the head's path, it is indexed per level in a way I have not found, or the structure is something else. Do not build on it without confirming |
 
 ---
 
@@ -495,7 +496,48 @@ correct container header, in-bounds accessors, decodable embedded PNGs, matching
 attribute counts and in-range indices. Triangle counts are asserted against the source
 polygon count on every export, so silently dropped geometry fails the run.
 
-Still open: U4, placing the separate prop models from sections 5+.
+**Track-specific props are now exported too** — `output/tracks/props/`. Sections 5–20
+are the shared car set (wheels, dust decals, car LODs, detachable bonnet and boot);
+anything from **21 up** is a prop unique to that track, and only three tracks have any:
+
+| file | what it is |
+|---|---|
+| `lev1_s21.glb` | the **head** — the animated face at Pine Hills |
+| `lev1_s22.glb` | wooden signpost with a gold arrow |
+| `lev4_s21/s22.glb` | mine carts carrying "2nd" / "3rd" position markers |
+| `lev8_s21.glb` | CHAMPION banner |
+
+These are absent from the track meshes because section 0 never instances them — the
+game creates and positions them at runtime, so there is no stored placement to read.
+They are exported at the origin, untransformed, for manual placement.
+
+**LEV1's head and signpost are now placed and animated inside `lev1.glb`** as their own
+nodes, `head` and `signpost`, alongside `track`.
+
+`FUN_8001e278` has a `switch (level)` whose **case 1** — Pine Hills — draws two extra
+objects every frame, `FUN_8001f8c8(handle, rot, pos)`, with the handles bound to ptr[21]
+and ptr[22] by `FUN_8001d944`. Both constants read out of the executable:
+
+- position `(55504, 3240, 9956)`, the same VECTOR for both — the head sits on the post
+- rotation seed `(512, 0, 0)`, a fixed 45° tilt about X (512 of 4096 units)
+- animation: `phase += 0x40` per frame, `rot.z = rsin(phase) >> 4` — a ±22.5° rock,
+  4096/0x40 = **64 frames per cycle**, ~2.13 s at 30 Hz
+
+Because the motion is procedural it is baked to keyframes: 65 quaternion keys per node
+over 2.133 s, LINEAR, looping cleanly. Placement checked against the terrain — that XZ
+has 4 surfaces beneath it at heights 2590/3175/3448, bracketing the prop's Y of 3240,
+with the nearest terrain vertex 16 units away.
+
+**Gate on the level number, not on which sections exist.** LEV4 also has sections 21/22
+(its mine carts) but they belong to a different switch case with their own positions, so
+keying off section presence placed them at Pine Hills' coordinates.
+
+**Bug found while doing this:** `build_prop_object` routed props through
+`TerrainInstance.origin`, and `coarse_translation(0)` is `0x4000`, not 0 — so every prop
+was displaced 64 output units on each axis. Props now take an explicit origin via
+`build_placed_object`; only terrain goes through the coarse/fine split.
+
+Still open: U4 (placement for LEV4's carts and LEV8's banner) and the rest of U9.
 
 **M6 — Verification**
 Automated checks: manifold-ish sanity (no degenerate tris, UVs in `[0,1]`, no NaNs),

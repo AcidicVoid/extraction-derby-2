@@ -35,6 +35,7 @@ of polygons and is preferable to darkening everything by using /255.
 from __future__ import annotations
 
 import io
+import math
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,10 +44,45 @@ import numpy as np
 from PIL import Image
 from pygltflib import (
     ARRAY_BUFFER, CLAMP_TO_EDGE, ELEMENT_ARRAY_BUFFER, FLOAT, GLTF2, MASK,
-    NEAREST, OPAQUE, TRIANGLES, UNSIGNED_INT, UNSIGNED_SHORT, Accessor, Asset,
-    Attributes, Buffer, BufferView, Image as GLTFImage, Material, Mesh, Node,
-    Primitive, PbrMetallicRoughness, Sampler, Scene, Texture, TextureInfo,
+    NEAREST, OPAQUE, TRIANGLES, UNSIGNED_INT, UNSIGNED_SHORT, Accessor,
+    Animation, AnimationChannel, AnimationChannelTarget, AnimationSampler,
+    Asset, Attributes, Buffer, BufferView, Image as GLTFImage, Material, Mesh,
+    Node, Primitive, PbrMetallicRoughness, Sampler, Scene, Texture, TextureInfo,
 )
+
+
+# --------------------------------------------------------------------------
+# PSX rotation helpers
+# --------------------------------------------------------------------------
+# PSX angles are 1/4096 of a turn. Rotations compose Z, then Y, then X.
+PSX_ANGLE_UNITS = 4096
+
+
+def psx_euler_to_quaternion(rx: float, ry: float, rz: float
+                            ) -> tuple[float, float, float, float]:
+    """
+    Convert a PSX SVECTOR rotation (in 1/4096-turn units) to a glTF quaternion.
+
+    The X and Z angles are negated because our coordinate conversion turns the
+    scene 180 degrees about Y. Conjugating a rotation by that turn preserves
+    composition order and flips the sign of the X and Z components, so the
+    order of operations is unchanged.
+    """
+    ax = -rx * 2.0 * math.pi / PSX_ANGLE_UNITS
+    ay = ry * 2.0 * math.pi / PSX_ANGLE_UNITS
+    az = -rz * 2.0 * math.pi / PSX_ANGLE_UNITS
+
+    cx, sx = math.cos(ax / 2), math.sin(ax / 2)
+    cy, sy = math.cos(ay / 2), math.sin(ay / 2)
+    cz, sz = math.cos(az / 2), math.sin(az / 2)
+
+    # q = qz * qy * qx
+    return (
+        sx * cy * cz + cx * sy * sz,
+        cx * sy * cz - sx * cy * sz,
+        cx * cy * sz + sx * sy * cz,
+        cx * cy * cz - sx * sy * sz,
+    )
 
 # PSX primitive colour 0x80 means "leave the texture alone".
 COLOUR_NEUTRAL = 128.0
@@ -98,6 +134,12 @@ class Object3D:
 
     name: str
     primitives: list[Primitive3D] = field(default_factory=list)
+    # Node transform, already in glTF space.
+    translation: tuple[float, float, float] | None = None
+    rotation: tuple[float, float, float, float] | None = None   # xyzw
+    # Optional rotation animation: (times in seconds, xyzw quaternions).
+    rotation_track: tuple[list[float], list[tuple[float, float, float, float]]] \
+        | None = None
 
     @property
     def triangle_count(self) -> int:
@@ -255,12 +297,53 @@ class GLBBuilder:
 
             self.gltf.meshes.append(Mesh(name=obj.name,
                                          primitives=gltf_prims))
-            self.gltf.nodes.append(Node(name=obj.name,
-                                        mesh=len(self.gltf.meshes) - 1))
-            root_children.append(len(self.gltf.nodes) - 1)
+            node = Node(name=obj.name, mesh=len(self.gltf.meshes) - 1)
+            if obj.translation is not None:
+                node.translation = list(obj.translation)
+            if obj.rotation is not None:
+                node.rotation = list(obj.rotation)
+            self.gltf.nodes.append(node)
+            node_index = len(self.gltf.nodes) - 1
+            root_children.append(node_index)
+
+            if obj.rotation_track is not None:
+                self._add_rotation_animation(node_index, obj)
 
         self.gltf.scenes.append(Scene(nodes=root_children))
         self.gltf.scene = 0
+
+    def _add_rotation_animation(self, node_index: int, obj: Object3D) -> None:
+        """
+        Attach a looping rotation animation to one node.
+
+        glTF stores rotation as quaternions sampled over time and interpolates
+        between them, so a procedural rotation has to be baked into keyframes.
+        One key per source frame keeps the result exact rather than relying on
+        the interpolator to reproduce a sine.
+        """
+        times, quats = obj.rotation_track
+        if not times:
+            return
+
+        time_array = np.asarray(times, dtype=np.float32)
+        input_accessor = self._add_accessor(time_array, FLOAT, "SCALAR", None)
+        # Time accessors must declare their range for players to seek.
+        self.gltf.accessors[input_accessor].min = [float(time_array.min())]
+        self.gltf.accessors[input_accessor].max = [float(time_array.max())]
+
+        output_accessor = self._add_accessor(
+            np.asarray(quats, dtype=np.float32), FLOAT, "VEC4", None)
+
+        self.gltf.animations.append(Animation(
+            name=f"{obj.name}_spin",
+            samplers=[AnimationSampler(input=input_accessor,
+                                       output=output_accessor,
+                                       interpolation="LINEAR")],
+            channels=[AnimationChannel(
+                sampler=0,
+                target=AnimationChannelTarget(node=node_index,
+                                              path="rotation"))],
+        ))
 
     def save(self, path: str | Path) -> None:
         self._align()

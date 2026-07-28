@@ -31,7 +31,7 @@ from dd2.carmodel import (DEFAULT_SCALE, PLAYER_CAR, build_car, build_livery,
                           player_liveries)
 from dd2.glb import write_glb
 from dd2.textures import LevelTextures, export_tiles
-from dd2.trackmodel import build_track
+from dd2.trackmodel import build_prop_object, build_track, prop_sections
 
 # The car mesh lives in the track files. LEV1 section 17 is the complete,
 # symmetric, full-detail car; see dd2/carmodel.py for how that was determined.
@@ -272,7 +272,10 @@ def extract_tracks(gamedata_dir: Path, levels: dict[str, LevelFile],
         try:
             textures = LevelTextures.from_dir(gamedata_dir / key,
                                               names=level.tex_names)
-            objects = build_track(level, textures, scale=scale)
+            # LEVn -> n, so per-level behaviour can be keyed off it.
+            level_id = int(key[3:], 16)
+            objects = build_track(level, textures, scale=scale,
+                                  level_id=level_id)
             path = dest / f"{key.lower()}.glb"
             write_glb(objects, path)
         except (FileNotFoundError, FormatError, KeyError) as exc:
@@ -285,14 +288,18 @@ def extract_tracks(gamedata_dir: Path, levels: dict[str, LevelFile],
         tris = sum(o.triangle_count for o in objects)
         prims = sum(len(o.primitives) for o in objects)
 
-        # Every polygon must survive into the mesh; a mismatch means geometry
-        # was silently dropped somewhere in the grouping.
+        # Every terrain polygon must survive into the mesh; a mismatch means
+        # geometry was silently dropped somewhere in the grouping. Compare the
+        # terrain object alone — animated props are extra nodes built from
+        # model sections, not from terrain instances.
         expected = sum(1 if p.corners == 3 else 2
                        for inst in terrain.instances
                        for p in inst.model.polygons)
-        if tris != expected:
-            log.error("%s: emitted %d triangles but the terrain holds %d",
-                      key, tris, expected)
+        terrain_tris = sum(o.triangle_count for o in objects
+                           if o.name == "track")
+        if terrain_tris != expected:
+            log.error("%s: emitted %d terrain triangles but the terrain "
+                      "holds %d", key, terrain_tris, expected)
             problems += 1
 
         log.info("%s: %d instances -> %d primitives, %d vertices, "
@@ -300,6 +307,24 @@ def extract_tracks(gamedata_dir: Path, levels: dict[str, LevelFile],
                  key, len(terrain.instances), prims, verts, tris,
                  path.stat().st_size / (1024 * 1024))
         written += 1
+
+        # Track-specific props are separate model blocks that section 0 never
+        # instances, so they are absent from the track mesh. Export each on its
+        # own; the game places them at runtime.
+        for section in prop_sections(level):
+            try:
+                obj = build_prop_object(level, textures, section, scale=scale,
+                                        name=f"{key.lower()}_prop{section}")
+                write_glb([obj],
+                          dest / "props" / f"{key.lower()}_s{section}.glb")
+            except (FormatError, KeyError) as exc:
+                log.error("%s section %d: prop export failed: %s",
+                          key, section, exc)
+                problems += 1
+                continue
+            log.info("%s: prop section %d -> %d vertices, %d triangles",
+                     key, section, obj.vertex_count, obj.triangle_count)
+            written += 1
 
     return written, problems
 
