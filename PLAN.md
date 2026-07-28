@@ -257,13 +257,20 @@ low five bits do not describe the primitive at all, and the +0x02 slot is not th
 and 0x02 masked out — `0x2E` is simply `0x2C` plus semi-transparency. That also
 explains `0x2E` appearing where a hard-coded table expected `0x2C`.
 
-**Y. The road surface is section 2.** Plotted top-down it is unmistakably the circuit:
-a closed ribbon with a hairpin, ~2105 points for LEV1. Arenas differ — LEV9 has
-exactly 1024 points, a 32×32 grid. Connectivity is *not* recoverable from the
-coordinates (X-run lengths are overwhelmingly 1), so the quads must be defined by
-section 1: a 192-entry linked list walked by `FUN_80025cc8`, with a next-offset at
-+0x1C and two chunk indices at +0x24/+0x26 used for streaming (at most 14 chunks
-resident at once).
+**Y. Section 2 is a path *on* the road, not the road itself.** Plotted top-down it
+traces the circuit exactly — a closed ribbon with a hairpin, 2105 points for LEV1;
+arenas differ, LEV9 having exactly 1024 points in a 32×32 grid. That resemblance led
+me to call it the road surface. It is not: projecting every point straight down onto
+section 0's geometry lands **2105 of 2105 on a triangle, with median and mean vertical
+offset of exactly 0**. So it is a racing line or collision reference sampled on a road
+that section 0 already contains.
+
+**Z. Section 0 is the complete track, road included.** The earlier claim that it held
+only scenery was wrong, and wrong for a preventable reason: I judged it from a
+flat-shaded 2D preview using a painter's algorithm, in which the tarmac blends into the
+surrounding ground and the scene reads as disconnected fragments. A z-buffered render
+shows a continuous circuit with lane markings, banked walls, packed grandstands and
+infield. **Lesson: judge geometry with a depth-correct render, never a flat sketch.**
 
 **S. The player's car has three class variants, and they need *two* palette sets.**
 Car 01 carries `CLUT01A–E` plus `CLT01A2–E2` and `CLT01A3–E3`, exported as
@@ -352,7 +359,7 @@ Observed types in LEV1: `0x00, 0x01, 0x04, 0x05, 0x08, 0x09, 0x0c, 0x0d, 0x19, 0
 | # | Unknown | Risk | Approach |
 |---|---|---|---|
 | ~~U1~~ | ~~ptr[0] terrain chunk format~~ | — | **Resolved** — scenery instances; see §1.3 U–X |
-| U8 | Road-surface connectivity: how section 1 groups section 2's points into quads | **High** — blocks the drivable surface | Section 1 is a 192-entry linked list (next at +0x1C, chunk indices at +0x24/+0x26). Find what indexes into section 2, and where the road's UVs come from |
+| ~~U8~~ | ~~Road-surface connectivity~~ | — | **Not needed** — section 0 already contains the road; section 2 is a path on it. See §1.3 Y–Z |
 | ~~U2~~ | ~~Polygon types `0x09 / 0x19 / 0x1d`~~ | — | **Resolved** — one layout rule covers all 24 observed types; see §1.3 F |
 | ~~U3~~ | ~~Which LEV1 section is the car~~ | — | **Resolved** — sections 16 and 17; see §1.3 G |
 | U4 | Prop world placement (ptr[1] / ptr[2]) | Medium | Needed to place props in the track GLB; ptr[2] is confirmed to hold world-space `i32` XYZ |
@@ -447,16 +454,17 @@ Deliverable: **22 textured GLBs in `output/cars/`** — 19 opponents plus the
 player car's three class variants — each 5 nodes (body + 4 wheels),
 465 vertices / 294 triangles. See §1.3 N–T.
 
-**M4 — Terrain format** — ✅ **section 0 done; road surface identified**
+**M4 — Terrain format** — ✅ **done**
 `dd2/lzss.py` and `dd2/terrain.py`. All 11 tracks decode: 6150 instances,
-128 554 vertices, 71 839 polygons, zero failures. See §1.3 U–Y.
-Remaining: road-surface connectivity (section 1 → section 2), tracked as U8.
+128 554 vertices, 71 839 polygons, zero failures. Section 0 proves to hold the
+complete track, road included. See §1.3 U–Z.
 
-**M5 — Tracks (primary deliverable #2)** — 🟡 **scenery done, road outstanding**
+**M5 — Tracks (primary deliverable #2)** — ✅ **geometry complete**
 `dd2/trackmodel.py` merges section 0's placed models into texture-grouped primitives.
 LEV1 comes out as 122 primitives / 21 847 vertices / 11 884 triangles and renders as
-recognisable Pine Hills Raceway scenery: scrub-grass ground, crowded grandstands,
-tarmac with lane markings, barriers, the start-finish building.
+recognisable Pine Hills Raceway: the full tarmac circuit with lane markings and banked
+walls, scrub-grass ground, crowded grandstands, barriers, the start-finish building.
+Every polygon is accounted for — 11 884 of 11 884 triangles emitted, nothing dropped.
 
 **Placement: only the coarse half of each position word is the translation.**
 `FUN_80025454` splits every position word into `coarse = (v & 0xFFFF8000) + 0x4000`
@@ -477,7 +485,10 @@ The sample count is the stronger signal: correcting this puts roughly three time
 much scenery adjacent to the track. Visually the landscape goes from scattered
 fragments to one contiguous ground surface with the road sitting on it.
 
-Blocked on U8 for the drivable road surface, and U4 for prop placement.
+Section 0 turns out to carry the whole track including the drivable road, verified by
+projecting section 2's path onto it (2105/2105 points land on geometry, zero vertical
+offset). Remaining for tracks: write the GLBs out from the CLI, and U4 for placing the
+separate prop models from sections 5+.
 
 **M6 — Verification**
 Automated checks: manifold-ish sanity (no degenerate tris, UVs in `[0,1]`, no NaNs),

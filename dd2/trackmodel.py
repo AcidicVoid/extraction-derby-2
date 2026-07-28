@@ -10,16 +10,23 @@ per-instance offsets.
 
 What section 0 actually contains
 --------------------------------
-Trackside scenery and the surrounding landscape, not the drivable road:
+The **complete track**, drivable road included:
 
+  * the road ribbon itself, tarmac with lane markings and banked walls
   * large ground panels, median extent about 23 700 units, painted with dirt
-    and scrub-grass textures — the land around the circuit
+    and scrub-grass — the land around the circuit
   * grandstands, buildings, advertising hoardings, barriers
 
-Rendered on its own and untextured this reads as a scatter of abstract shapes,
-which is misleading. Overlaid on the section 2 road points it is obviously a
-racetrack: the scenery wraps the circuit and the grandstands line the main
-straight.
+Confirmed by projecting section 2's path points straight down onto this
+geometry: **all 2105 of them land on a triangle, with median and mean vertical
+offset of exactly 0**. Section 2 is therefore a path sampled on the road
+surface — a racing line or collision reference — and not a separate mesh that
+needs building. Nothing is missing from section 0.
+
+Beware flat-shaded previews. Drawn in a single colour with a painter's
+algorithm the road blends into the surrounding ground and the scene reads as
+disconnected fragments with holes in it. Both impressions are artefacts of the
+preview; a z-buffered render shows a continuous circuit.
 
 Placement uses `TerrainInstance.origin`, the **coarse** half of each position
 word, not the raw value — see `dd2.terrain.coarse_translation`. Getting this
@@ -204,11 +211,13 @@ def build_track(level: LevelFile, textures: LevelTextures,
     """
     Build the objects making up one track.
 
-    Currently the scenery from section 0. The drivable road surface lives in
-    section 2 and needs section 1 to supply its connectivity; see PLAN.md U8.
+    Section 0 carries the whole track — road, landscape and structures — so
+    this is the complete visual model. Splitting the road out as its own object
+    would need a way to tell road polygons from the rest; section 2's path can
+    serve as that classifier if it is ever wanted.
     """
     instances = level.terrain.instances
     if not instances:
         raise FormatError(f"{level.name}: no terrain instances to export")
     return [build_scenery_object(level, textures, instances, scale=scale,
-                                 name="scenery")]
+                                 name="track")]
