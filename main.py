@@ -31,6 +31,7 @@ from dd2.carmodel import (DEFAULT_SCALE, PLAYER_CAR, build_car, build_livery,
                           player_liveries)
 from dd2.glb import write_glb
 from dd2.textures import LevelTextures, export_tiles
+from dd2.trackmodel import build_track
 
 # The car mesh lives in the track files. LEV1 section 17 is the complete,
 # symmetric, full-detail car; see dd2/carmodel.py for how that was determined.
@@ -252,6 +253,57 @@ def extract_cars(gamedata_dir: Path, levels: dict[str, LevelFile],
     return written, problems
 
 
+def extract_tracks(gamedata_dir: Path, levels: dict[str, LevelFile],
+                   out_dir: Path, scale: float) -> tuple[int, int]:
+    """
+    Export one GLB per track. Returns (written, problems).
+
+    Section 0 holds the whole track — road, landscape and structures — so each
+    file is a single complete scene.
+    """
+    log = logs.get("tracks")
+    dest = out_dir / "tracks"
+    written = 0
+    problems = 0
+
+    for key, level in sorted(levels.items()):
+        if not level.is_track:
+            continue
+        try:
+            textures = LevelTextures.from_dir(gamedata_dir / key,
+                                              names=level.tex_names)
+            objects = build_track(level, textures, scale=scale)
+            path = dest / f"{key.lower()}.glb"
+            write_glb(objects, path)
+        except (FileNotFoundError, FormatError, KeyError) as exc:
+            log.error("%s: track export failed: %s", key, exc)
+            problems += 1
+            continue
+
+        terrain = level.terrain
+        verts = sum(o.vertex_count for o in objects)
+        tris = sum(o.triangle_count for o in objects)
+        prims = sum(len(o.primitives) for o in objects)
+
+        # Every polygon must survive into the mesh; a mismatch means geometry
+        # was silently dropped somewhere in the grouping.
+        expected = sum(1 if p.corners == 3 else 2
+                       for inst in terrain.instances
+                       for p in inst.model.polygons)
+        if tris != expected:
+            log.error("%s: emitted %d triangles but the terrain holds %d",
+                      key, tris, expected)
+            problems += 1
+
+        log.info("%s: %d instances -> %d primitives, %d vertices, "
+                 "%d triangles, %.1f MB",
+                 key, len(terrain.instances), prims, verts, tris,
+                 path.stat().st_size / (1024 * 1024))
+        written += 1
+
+    return written, problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="extraction-derby-2",
@@ -271,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="skip texture extraction")
     parser.add_argument("--no-cars", action="store_true",
                         help="skip car model export")
+    parser.add_argument("--no-tracks", action="store_true",
+                        help="skip track model export")
     parser.add_argument("--scale", type=float, default=DEFAULT_SCALE,
                         help=f"model units per output unit "
                              f"(default {DEFAULT_SCALE:g}, i.e. 1/256)")
@@ -316,6 +370,12 @@ def main(argv: list[str] | None = None) -> int:
             args.scale)
         problems += car_problems
         print(f"cars      {cars} GLBs -> {output_dir / 'cars'}")
+
+    if not args.no_tracks and levels:
+        tracks, track_problems = extract_tracks(
+            gamedata_dir, levels, output_dir, args.scale)
+        problems += track_problems
+        print(f"tracks    {tracks} GLBs -> {output_dir / 'tracks'}")
 
     if problems:
         print(f"WARNING   {problems} validation problem(s) — see {log_dir}")

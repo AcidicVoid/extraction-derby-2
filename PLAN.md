@@ -487,8 +487,15 @@ fragments to one contiguous ground surface with the road sitting on it.
 
 Section 0 turns out to carry the whole track including the drivable road, verified by
 projecting section 2's path onto it (2105/2105 points land on geometry, zero vertical
-offset). Remaining for tracks: write the GLBs out from the CLI, and U4 for placing the
-separate prop models from sections 5+.
+offset).
+
+**Deliverable: 11 GLBs in `output/tracks/`** (19 MB total), one per track, written by
+the CLI alongside cars and textures. Every file round-trips through a glTF reader with
+correct container header, in-bounds accessors, decodable embedded PNGs, matching
+attribute counts and in-range indices. Triangle counts are asserted against the source
+polygon count on every export, so silently dropped geometry fails the run.
+
+Still open: U4, placing the separate prop models from sections 5+.
 
 **M6 — Verification**
 Automated checks: manifold-ish sanity (no degenerate tris, UVs in `[0,1]`, no NaNs),
