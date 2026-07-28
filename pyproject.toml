@@ -1,0 +1,11 @@
+[project]
+name = "extraction-derby-2"
+version = "0.1.0"
+description = "Asset extractor for Destruction Derby 2 (PS1, 1996) — exports textured GLB models"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pillow>=10.0",
+    "numpy>=1.26",
+    "pygltflib>=1.16",
+]
